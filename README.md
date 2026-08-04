@@ -246,11 +246,6 @@ This research builds on:
 - **Deep Reinforcement Learning** (Boute et al., 2022): Learning-based control policies
 - **DCL Framework** (Temizoz et al., 2025): Deep Controlled Learning for inventory systems
 
-## Authors
-
-- **Eliz Payasli** (Eindhoven University of Technology)
-- **Supervisors:** Willem van Jaarsveld, Tarkan Temizoz
-
 ## References
 
 1. Sherbrooke, C.C. (1968). "METRIC: A Multi-Echelon Technique for Recoverable Item Control"
@@ -265,4 +260,4 @@ This project is released under the MIT License. See LICENSE file for details.
 
 **Documentation:** See `docs/` folder for detailed technical papers and experiment results.  
 **Pre-trained Models:** GC-LSN neural network weights available in `gc-lsn-weights/`.  
-**Questions?** File an issue or contact the authors.
+
