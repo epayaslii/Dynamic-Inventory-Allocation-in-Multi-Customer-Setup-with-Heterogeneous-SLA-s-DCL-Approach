@@ -1,7 +1,5 @@
 # Dynamic Inventory Allocation in Multi-Customer Systems with Heterogeneous SLAs
 
-A Deep Controlled Learning (DCL) approach for optimizing inventory allocation decisions in multi-customer, multi-item inventory systems operating under heterogeneous Service Level Agreements (SLAs).
-
 ## Overview
 
 This repository implements a sophisticated inventory management system for a central warehouse serving multiple customers, each with distinct SLA requirements. The key innovation is the **Dynamic Allocation Policy** learned via Deep Controlled Learning, which decides how to ration scarce inventory among customers to minimize total expected cost while respecting per-customer backorder allowance constraints.
