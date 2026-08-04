@@ -1,0 +1,555 @@
+%% ============================================================
+%%  Multi-Customer, Multi-Item Inventory Management Under SLAs
+%%  A Deep Controlled Learning Approach with Dynamic Allocation
+%%  Enhanced Version with Detailed Experiments and DCL Framework
+%% ============================================================
+
+\documentclass[11pt, a4paper]{article}
+
+%% ---- Packages ----
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{pifont}
+\usepackage[english]{babel}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usepackage{longtable}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc}
+
+%% ---- Page Layout ----
+\geometry{
+    a4paper,
+    top=2.5cm, bottom=2.5cm,
+    left=2.5cm, right=2.5cm
+}
+\onehalfspacing
+
+%% ---- Hyperref Setup ----
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black,
+    pdftitle={Multi-Customer Inventory Management Under Heterogeneous SLAs},
+    pdfauthor={Eliz Payasli}
+}
+
+%% ---- Theorem Environments ----
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+%% ---- Custom Commands ----
+\newcommand{\IL}{\text{IL}}
+\newcommand{\IP}{\text{IP}}
+\newcommand{\AFR}{\text{AFR}}
+\newcommand{\BO}{\text{BO}}
+\newcommand{\Q}{\mathbf{Q}}
+\newcommand{\S}{\mathbf{S}}
+\newcommand{\D}{\mathbf{D}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\Nat}{\mathbb{N}}
+
+%% ============================================================
+\begin{document}
+
+%% ---- Title Block ----
+\begin{titlepage}
+    \centering
+    \vspace*{1.5cm}
+
+    {\Large \textbf{Eindhoven University of Technology}\\[0.3em]
+    Department of Industrial Engineering and Innovation Sciences\\
+    Operations, Planning, Accounting \& Control}
+
+    \vspace{3cm}
+
+    {\LARGE \textbf{Dynamic Inventory Allocation\\[0.5em]
+    in Multi-Customer Systems\\[0.5em]
+    with Heterogeneous Service Level Agreements\\[0.5em]
+    A Deep Controlled Learning Approach}}
+
+    \vspace{2.5cm}
+
+    {\large \textit{Research Paper --- Full Implementation}}
+
+    \vspace{2cm}
+
+    {\large
+    \textbf{Author:} Eliz Payasli \\[0.7em]
+    \textbf{Supervisors:} Willem van Jaarsveld, Tarkan Temizoz \\[0.3em]
+    \textbf{Date:} July 2026 \\[0.3em]
+
+    }
+
+\end{titlepage}
+
+%% ---- From here on, body text is left-aligned (ragged right) ----
+\raggedright
+
+\newpage
+\section{Research Questions}
+
+\begin{enumerate}
+    \item[\textbf{RQ1}] \textit{Optimal Base-Stock Levels:} What base-stock levels $\mathbf{S}^* = \{S_1^*, S_2^*\}$ minimize total expected cost $\mathbb{E}[C_{\text{total}}]$ subject to multi-customer Service Level Agreement (SLA) constraints?
+
+    \item[\textbf{RQ2}] \textit{Optimal Allocation Policy:} Given fixed base-stock levels, what allocation policy $\pi: \mathcal{S} \to \mathcal{A}$ minimizes cost while ensuring that each customer's cumulative backorder exposure respects their SLA backorder allowance?
+\end{enumerate}
+
+\section{Model Formulation}
+
+\subsection{System Overview}
+
+We consider a multi-period inventory system with $I$ items and $C$ customers:
+\begin{itemize}
+    \item $I \geq 1$ items (indexed $i \in \{1, \ldots, I\}$)
+    \item $C \geq 1$ customers (indexed $C \in \{1, \ldots, C\}$)
+    \item $T > 0$ periods per review cycle
+    \item Lead time $L \geq 0$ periods (time to receive replenishment orders)
+    \item Demand $D_{C,i}(t)$ per period, per customer $C$ and item $i$ (stochastic, non-negative)
+\end{itemize}
+
+\subsection{SLA Interpretation and Backorder Allowance}
+
+Each customer $C$ has a backorder allowance $\beta_C \geq 0$ — the maximum cumulative backorder units tolerated over a review cycle of length $T$.
+
+\textbf{Definition:}
+\begin{equation}
+    \beta_C = \text{Maximum cumulative backorder exposure allowed for customer } C \text{ per review horizon}
+\end{equation}
+
+\textbf{Interpretation:} At the end of a review horizon $r$ (at period $t = rT$), if a customer $C$'s cumulative backorder exposure $\overline{\text{BO}}_C(rT) = \sum_{j=(r-1)T+1}^{rT} \text{BO}_C(j)$ exceeds their allowance $\beta_C$, a linear penalty is charged. Higher $\beta_C$ indicates looser SLA tolerance; lower $\beta_C$ indicates stricter SLA requirement.
+
+\subsection{Time Notation and Review Horizons}
+
+Before defining state variables, we clarify the temporal indexing used throughout:
+\begin{itemize}
+    \item $t$: \textbf{Current period} (absolute time index; $t = 1, 2, 3, \ldots$)
+    \item $T$: \textbf{Review horizon length} (number of periods per review cycle; e.g., $T = 20$)
+    \item $r$: \textbf{Review horizon index} (which review cycle; $r = 1, 2, 3, \ldots$)
+    \item $r(t)$: \textbf{Horizon mapping function} — which review horizon contains period $t$:
+    \begin{equation}
+        r(t) = \left\lceil \frac{t}{T} \right\rceil
+    \end{equation}
+    So period $t$ belongs to horizon $r(t)$, which spans periods $(r(t)-1)T + 1$ through $r(t) \cdot T$.
+\end{itemize}
+
+\textbf{Example:} If $T = 20$, then:
+\begin{itemize}
+    \item Periods 1–20 belong to horizon $r=1$: $(r-1)T+1=1$, $rT=20$
+    \item Periods 21–40 belong to horizon $r=2$: $(r-1)T+1=21$, $rT=40$
+    \item Period $t=35$ has $r(35) = \lceil 35/20 \rceil = 2$
+\end{itemize}
+
+\subsection{State Variables}
+
+At period $t$ within review horizon $r$, the state $s_t$ includes:
+
+\subsubsection{On-Hand Inventory (I features)}
+\begin{equation}
+    \text{OH}_i(t) \in \mathbb{R}, \quad i \in \{1, \ldots, I\}
+\end{equation}
+
+\subsubsection{On-Hand Inventory Before Allocation (I features)}
+\begin{equation}
+    \text{OH}^*_i(t) \in \mathbb{R}, \quad i \in \{1, \ldots, I\}
+\end{equation}
+
+\textbf{Interpretation:}
+\begin{itemize}
+    \item $\text{OH}_i(t)$: on-hand inventory AFTER allocations in period $t$ (can be negative = unmet demand)
+    \item $\text{OH}^*_i(t)$: on-hand inventory BEFORE allocations in period $t$ = available inventory for rationing
+\end{itemize}
+
+\subsubsection{Pipeline Orders (I × L features)}
+Orders placed in the past $L$ periods, currently in transit:
+\begin{equation}
+    Q_i(t-1), Q_i(t-2), \ldots, Q_i(t-L) \quad \text{for each item } i \in \{1, \ldots, I\}
+\end{equation}
+These represent orders that will arrive in periods $t+1$ through $t+L$ respectively.
+
+\subsubsection{Backorder per Customer-Item (C × I features)}
+\begin{equation}
+    \text{BO}_{C,i}(t) \in \mathbb{R}, \quad C \in \{1, \ldots, C\}, \, i \in \{1, \ldots, I\}
+\end{equation}
+
+\subsubsection{Observed Demand (Current Period) (C × I features)}
+Realized demand for current period $t$, per customer-item pair:
+\begin{equation}
+    D_{C,i}(t) \in \mathbb{R}_+, \quad C \in \{1, \ldots, C\}, \, i \in \{1, \ldots, I\}
+\end{equation}
+Total demand for customer $C$ in period $t$ (summed across items): $D_C(t) = \sum_i D_{C,i}(t)$.
+
+\subsubsection{Cumulative Backorder Sum (C features)}
+Running sum of backorder levels from the start of the current review horizon through period $t-1$:
+\begin{equation}
+    \overline{\text{BO}}_C(t) = \sum_{j=(r-1)T+1}^{t-1} \text{BO}_C(j)
+\end{equation}
+where $\text{BO}_C(j) = \sum_i \text{BO}_{C,i}(j)$ is the total backorder for customer $C$ at end of period $j$ and $r=r(t)$. This tracks cumulative backorder exposure within the review horizon and is reset to 0 at the start of each new horizon.
+
+\subsubsection{Time Remaining (1 feature)}
+\begin{equation}
+    T_{\text{rem}}(t) = rT - t
+\end{equation}
+
+\subsubsection{SLA Backorder Allowance per Customer (C features)}
+\begin{equation}
+    \beta_C \quad \text{(maximum cumulative backorder units allowed for customer } C \text{)}
+\end{equation}
+
+Absolute number per customer (e.g., $\beta_I = 6$ units, $\beta_{II} = 8$ units). Penalty is incurred if $\overline{\text{BO}}_C(rT) > \beta_C$ at horizon end.
+
+\textbf{Inventory Position (computed, NOT stored):}
+\begin{equation}
+    \text{IP}_i(t) = \text{OH}_i(t) + \sum_{j=t-L+1}^{t-1} Q_i(j) - \sum_C \text{BO}_{C,i}(t)
+\end{equation}
+
+\textbf{Total state dimension:} $|\mathcal{S}| = I + I \cdot L + C \cdot I + C \cdot I + C + 1 + C$
+
+\begin{itemize}
+    \item $I$ features: on-hand inventory per item after allocation
+    \item $I$ features: on-hand inventory per item before allocation (OH*)
+    \item $I \cdot L$ features: pipeline orders per item (orders placed in past $L$ periods)
+    \item $C \cdot I$ features: current backorders per customer-item: $\text{BO}_{C,i}(t)$
+    \item $C \cdot I$ features: observed demand (current period) per customer-item: $D_{C,i}(t)$
+    \item $C$ features: cumulative backorder sum $\overline{\text{BO}}_C(t)$ per customer within review horizon
+    \item $1$ feature: time remaining in horizon
+    \item $C$ features: SLA backorder allowances $\beta_C$ per customer
+\end{itemize}
+
+\subsection{Inventory Position}
+
+The inventory position (IP) combines on-hand inventory with all orders in the pipeline (including today's arrival), adjusted for outstanding backorders:
+\begin{equation}
+    \text{IP}_i(t) = \text{OH}_i(t) + \sum_{j=t-L}^{t-1} Q_i(j) - \sum_C \text{BO}_{C,i}(t)
+\end{equation}
+
+\textbf{Interpretation:}
+\begin{itemize}
+    \item $\text{OH}_i(t)$: current on-hand inventory (after allocations from previous period)
+    \item $\sum_{j=t-L}^{t-1} Q_i(j)$: all orders in the pipeline — from the one arriving today ($Q_i(t-L)$) through the one placed yesterday ($Q_i(t-1)$). This is $L$ orders total.
+    \item $\sum_C \text{BO}_{C,i}(t)$: outstanding backorder debt for item $i$ across all customers
+\end{itemize}
+
+\subsection{Decisions Each Period}
+
+Each period $t$, the system makes two decisions:
+
+\subsubsection{Ordering Decision (STATIC)}
+
+For each item $i$, maintain a fixed base-stock replenishment policy:
+\begin{equation}
+    Q_i(t) = \max(0, S_i - \text{IP}_i(t))
+\end{equation}
+
+where $S_i$ is the fixed base-stock level for item $i$. This order is placed in period $t$ and arrives $L$ periods later (in period $t+L$).
+
+\subsubsection{Allocation Decision (DYNAMIC)}
+
+Each period $t$, after demands are realized, an allocation policy $\pi(s_t)$ chooses allocation quantities:
+
+\begin{equation}
+    A_{C,i}(t) = \pi_{C,i}(s_t)
+\end{equation}
+
+for each customer $C$ and item $i$, subject to the feasibility constraint:
+\begin{equation}
+    \sum_C A_{C,i}(t) \leq \text{Available}_i(t)
+\end{equation}
+
+where $\text{Available}_i(t) = \text{OH}^*_i(t)$ is the available supply before allocation. The policy may allocate any amount up to availability; it need not use all available stock.
+
+\textbf{Interpretation:} The allocation policy decides how many units of each item to allocate to each customer, ensuring the total allocation does not exceed available supply. The policy can use any information from state $s_t$ (inventory levels, backorders, time remaining, SLA metrics) to make decisions. When demand is insufficient to warrant rationing (Component 2 $\leq$ Component 1 from Step 5), allocation is deterministic: full coverage. When rationing is necessary, the policy's choice determines which customers are prioritized.
+
+\newpage
+\section{Period Workflow}
+
+Within review horizon $r$, each period $t \in [(r-1)T+1, rT]$ executes the following 8 steps in order:
+
+\textbf{Notation Convention:}
+\begin{itemize}
+    \item \textbf{Indexed equations} (e.g., $A_{C,i}(t)$) apply \textbf{separately for each} customer $C$ and item $i$ — explicitly labeled "\textit{for each customer $C$}" or "\textit{for each item $i$}"
+    \item \textbf{Summation notation} (e.g., $\sum_C A_{C,i}(t)$) indicates \textbf{aggregation across} all customers or items — combines individual quantities into a total
+    \item Example: $A_{C,i}(t) = \ldots$ (per-customer rule) vs. $\sum_C A_{C,i}(t) = \text{OH}^{(i)}(t)$ (aggregate constraint)
+\end{itemize}
+
+\subsection{Step 1: Receive Orders (for each item $i$)}
+
+Order $Q_i(t-L)$ placed $L$ periods ago arrives and is added to on-hand inventory:
+\begin{equation}
+    \text{OH}^*_i(t) := \text{OH}_i(t) + Q_i(t-L)
+\end{equation}
+
+where $\text{OH}_i(t)$ at the start of Step 1 is the inventory remaining from the previous period (after allocations in period $t-1$).
+
+\textbf{Interpretation:} After receiving the order, $\text{OH}^*_i(t)$ represents the total available inventory before any allocations are made this period.
+
+\subsection{Step 2: Observe Inventory Position (for each item $i$)}
+
+After Step 1 receives $Q(t-L)$, calculate the inventory position to support the ordering decision:
+\begin{equation}
+    \text{IP}_i(t) = \text{OH}^*_i(t) + \sum_{j=t-L+1}^{t-1} Q_i(j) - \sum_C \text{BO}_{C,i}(t)
+\end{equation}
+
+\textbf{Explanation:}
+\begin{itemize}
+    \item $\text{OH}^*_i(t)$: available inventory after order arrival (from Step 1)
+    \item $\sum_{j=t-L+1}^{t-1} Q_i(j)$: remaining pipeline orders (arriving in periods $t+1$ through $t+L-1$)
+    \item $\sum_C \text{BO}_{C,i}(t)$: outstanding backorder debt for item $i$ across all customers
+\end{itemize}
+
+\textbf{Net effect:} This is equivalent to the abstract definition: IP includes all $L$ orders in the pipeline (from $t-L$ to $t-1$), whether expressed before or after Step 1's update to OH*.
+
+\textbf{Interpretation:} IP represents the total inventory available to cover future demand, considering orders in transit and outstanding backorders.
+
+\subsection{Step 3: Calculate New Orders (for each item $i$)}
+
+Based on the base-stock policy, determine how much to order:
+\begin{equation}
+    Q_i(t) = \max(0, S_i - \text{IP}_i(t))
+\end{equation}
+
+This order is placed in period $t$ and will arrive in period $t+L$ (not yet in Step 1 of this period).
+
+\subsection{Step 4: Observe Demand (for each customer $C$ and item $i$)}
+
+Demands $D_{C,i}(t)$ are realized stochastically per customer-item pair. Total item demand:
+\begin{equation}
+    D_i(t) = \sum_C D_{C,i}(t)
+\end{equation}
+
+\subsection{Step 5: Check Rationing Necessity (for each item $i$)}
+
+Determine if rationing is needed by comparing two components:
+
+\textbf{Component 1: Available supply}
+\begin{equation}
+    \text{Available}_i(t) = \text{OH}^*_i(t)
+\end{equation}
+
+\textbf{Component 2: Total demand (backlog + new demand)}
+\begin{equation}
+    \text{Demand}_i(t) = \sum_C [\text{BO}_{C,i}(t) + D_{C,i}(t)]
+\end{equation}
+
+\textbf{Rationing Decision:}
+
+\textbf{If } $\text{Demand}_i(t) \leq \text{Available}_i(t)$ \textbf{(No rationing):} Sufficient inventory to cover all backlog and new demand. Allocate fully:
+\begin{equation}
+    A_{C,i}(t) = \text{BO}_{C,i}(t) + D_{C,i}(t) \quad \text{for each customer } C
+\end{equation}
+
+Result: $\text{BO}_{C,i}(t+1) = 0$ (all backorder debt cleared for this item).
+
+\textbf{If } $\text{Demand}_i(t) > \text{Available}_i(t)$ \textbf{(Rationing needed):} Insufficient inventory. The allocation policy chooses how to ration available stock subject to:
+\begin{equation}
+    \sum_C A_{C,i}(t) \leq \text{Available}_i(t)
+\end{equation}
+
+The policy may allocate less than all available stock (strategic hold). Some customers will experience stockouts; unmet demand carries forward as backorder to next period.
+
+\subsection{Step 6: Allocate Using Policy (for each item $i$ when rationing is needed)}
+
+The allocation policy $\pi(s_t)$ is called to determine $A_{C,i}(t)$ for each customer $C$, subject to the availability constraint above. The policy may use any information from the current state $s_t$ to make decisions. Some customers will receive their full demand, others will experience stockouts that become backorders (carried to next period).
+
+\subsection{Step 7: Update State Variables}
+
+After allocations are made, all state variables are updated to reflect period $t$'s outcomes.
+
+\textbf{On-Hand Inventory Update (for each item $i$):}
+\begin{equation}
+    \text{OH}_i(t+1) = \text{OH}^*_i(t) - \sum_C A_{C,i}(t)
+\end{equation}
+
+\textbf{Interpretation:}
+\begin{itemize}
+    \item Start with available inventory: $\text{OH}^*_i(t)$ (after receiving orders in Step 1)
+    \item Subtract all allocations: $\sum_C A_{C,i}(t)$
+    \item Result: net on-hand inventory at end of period, which becomes $\text{OH}_i(t+1)$ for next period
+    \item Note: $\text{OH}^*_i(t+1)$ will be calculated in Step 1 of next period after order arrival
+\end{itemize}
+
+\textbf{Backorder Update (for each customer $C$ and item $i$):}
+\begin{equation}
+    \text{BO}_{C,i}(t+1) = \text{BO}_{C,i}(t) + D_{C,i}(t) - A_{C,i}(t)
+\end{equation}
+
+If allocation was insufficient, the unmet demand becomes backorder carried to next period.
+
+\textbf{Aggregate Backorder per Customer (for each customer $C$):}
+\begin{equation}
+    \text{BO}_C(t+1) = \sum_i \text{BO}_{C,i}(t+1)
+\end{equation}
+
+\textbf{Cumulative Backorder Sum Update (for each customer $C$):}
+
+The cumulative backorder sum accumulates the backorder level within the current review horizon, with explicit reset at horizon boundary:
+\begin{equation}
+    \begin{cases}
+        \overline{\text{BO}}_C(t+1) = \overline{\text{BO}}_C(t) + \text{BO}_C(t+1) & \text{if } t + 1 < r(t+1) \cdot T \text{ (interior period)} \\
+        \overline{\text{BO}}_C(t+1) = 0 & \text{if } t + 1 = r(t+1) \cdot T \text{ (end of horizon)}
+    \end{cases}
+\end{equation}
+
+\textbf{Explanation:}
+\begin{itemize}
+    \item For interior periods (before horizon end): cumulative sum grows by adding this period's backorder level
+    \item At horizon end (when $t+1 = r(t+1) \cdot T = r(t) \cdot T + T$): the cumulative sum resets for the next horizon
+    \item Backorder levels $\text{BO}_{C,i}(t+1)$ persist across horizon boundaries (initial backorder for next horizon)
+    \item Only the cumulative sum $\overline{\text{BO}}_C$ resets
+\end{itemize}
+
+\textbf{Time Remaining Update:}
+
+$T_{\text{rem}}$ (defined as $T_{\text{rem}}(t) = r(t) \cdot T - t$) decreases by 1 inside the horizon. At horizon end, it resets to $T$ for the next horizon.
+
+\subsection{Step 8: Calculate Cost}
+
+Costs are incurred based on the current period's outcomes and position in the review horizon.
+
+\textbf{Holding Cost (every period):}
+\begin{equation}
+    C_{\text{hold}}(t) = \sum_i h_i \cdot \text{OH}^*_i(t)
+\end{equation}
+
+Note: Holding cost is based on available inventory BEFORE allocation ($\text{OH}^*_i(t)$), as this represents the stock that must be maintained.
+
+\textbf{SLA Penalty:}
+\begin{equation}
+    C_{\text{penalty}}(t) = \begin{cases}
+        \sum_C p_C \cdot \max(0, \overline{\text{BO}}_C(t) - \beta_C) & \text{if } T_{\text{rem}}(t) = 0 \text{ (end of review horizon)} \\
+        0 & \text{otherwise (interior period)}
+    \end{cases}
+\end{equation}
+
+\textbf{Total Period Cost:}
+\begin{equation}
+    C(t) = \begin{cases}
+        C_{\text{hold}}(t) + C_{\text{penalty}}(t) & \text{if } T_{\text{rem}}(t) = 0 \text{ (end of horizon)} \\
+        C_{\text{hold}}(t) & \text{otherwise (interior period)}
+    \end{cases}
+\end{equation}
+
+\textbf{Parameters:}
+\begin{itemize}
+    \item $h_i > 0$: holding cost coefficient for item $i$
+    \item $p_C > 0$: penalty cost per unit excess backorder for customer $C$
+    \item $\beta_C > 0$: backorder allowance (tolerance) for customer $C$ per review horizon
+    \item $\overline{\text{BO}}_C(t)$: cumulative backorder sum at current period
+\end{itemize}
+
+\newpage
+\section{Objective Function}
+
+The allocation policy $\pi(s_t)$ is chosen to minimize total expected cost over a review horizon $r$:
+
+\begin{equation}
+    \min_{\pi} \mathbb{E}\left[\sum_{t=(r-1)T+1}^{rT} C(t) \mid s_0\right]
+\end{equation}
+
+where the expectation is over stochastic demand realizations $D_{C,i}(t)$, and:
+\begin{itemize}
+    \item For interior periods ($t < r(t) \cdot T$): $C(t) = C_{\text{hold}}(t) = \sum_i h_i \cdot \text{OH}^*_i(t)$
+    \item For horizon end ($t = r(t) \cdot T$): $C(t) = C_{\text{hold}}(t) + C_{\text{penalty}}(t)$, where $C_{\text{penalty}}(t) = \sum_C p_C \cdot \max(0, \overline{\text{BO}}_C(t) - \beta_C)$
+    \item $\pi: \mathcal{S} \to \mathbb{R}^{C \times I}$ is the allocation policy determining $A_{C,i}(t)$ each period (independent of the static ordering policy)
+\end{itemize}
+
+\textbf{Note:} The base-stock levels $S_i$ are fixed; only the allocation policy $\pi$ is subject to optimization.
+
+\section{Policy Learning Methodology (Future Work)}
+
+The allocation policy $\pi(s_t)$ can be learned via various approaches (e.g., Deep Controlled Learning, reinforcement learning, stochastic optimization). Such methodology is independent of the model formulation and will be addressed in separate research. This document provides the formal model; policy optimization is orthogonal to the model's correctness.
+
+\section{Summary}
+
+This model formalizes a multi-period, multi-customer, multi-item inventory system where:
+
+\begin{itemize}
+    \item \textbf{Orders} follow a static base-stock policy: $Q_i(t) = \max(0, S_i - \text{IP}_i(t))$
+
+    \item \textbf{Allocations} are chosen dynamically by policy $\pi(s_t)$ to minimize cumulative cost over a review horizon
+
+    \item \textbf{Backorders} are tracked per customer-item and accumulated within review horizons to assess SLA compliance
+
+    \item \textbf{Costs} consist of holding (every period) and SLA penalties (at horizon end if cumulative backorder exposure exceeds the customer's allowance)
+
+    \item \textbf{Research objective:} Find the optimal allocation policy $\pi^*$ that minimizes expected cost while respecting SLA constraints
+\end{itemize}
+
+%% ============================================================
+%% Bibliography
+%% ============================================================
+\newpage
+\bibliographystyle{plainnat}
+
+\begin{thebibliography}{99}
+
+\bibitem[Abbasi et~al.(2022)]{abbasi2022}
+Abbasi, B., Fadaki, M., Hosseinifard, Z., Jahani, H., \& Thomas, D.~J. (2022).
+Allocation policies to fulfil heterogeneous service requirements under resource pooling.
+\textit{Decision Sciences}, 53(2), 277--319.
+
+\bibitem[Boute et~al.(2022)]{boute2022}
+Boute, R.~N., Gijsbrechts, J., van Jaarsveld, W., \& Vanvuchelen, N. (2022).
+Deep reinforcement learning for inventory control: A roadmap.
+\textit{European Journal of Operational Research}, 298(2), 401--412.
+
+\bibitem[Sherbrooke(1968)]{sherbrooke1968}
+Sherbrooke, C.~C. (1968).
+METRIC: A multi-echelon technique for recoverable item control.
+\textit{Operations Research}, 16(1), 122--141.
+
+\bibitem[Sherbrooke(2004)]{sherbrooke2004}
+Sherbrooke, C.~C. (2004).
+\textit{Optimal Inventory Modeling of Systems: Multi-Echelon Techniques}.
+Kluwer Academic Publishers.
+
+\bibitem[Tan et~al.(2017)]{tan2017}
+Tan, Y.~R., Paul, A.~A., Deng, Q., \& Wei, L. (2017).
+Mitigating inventory overstocking: Optimal order-up-to level to achieve a target fill rate over a finite horizon.
+\textit{Production and Operations Management}, 26(11), 1971--1988.
+
+\bibitem[Temizoz et~al.(2025)]{temizoz2025dcl}
+Temizoz, T., Imdahl, C., Dijkman, R., Lamghari-Idrissi, D., \& van Jaarsveld, W. (2025).
+Deep Controlled Learning for Inventory Control.
+\textit{European Journal of Operational Research}, 324(1), 104--117.
+
+\bibitem[Temizoz et~al.(2026)]{temizoz2026sla}
+Temizoz, T., Imdahl, C., Dijkman, R., Lamghari-Idrissi, D., \& van Jaarsveld, W. (2026).
+Dynamic control under finite-horizon fill-rate targets.
+\textit{Manufacturing \& Service Operations Management}, 28(1), 45--67.
+
+\bibitem[van der Haar et~al.(2026)]{vanderhaar2026asml}
+van der Haar, J.~F., van Jaarsveld, W., Basten, R.~J.~I., \& Boute, R.~N. (2026).
+Industrializing deep reinforcement learning for operational spare parts inventory management.
+\textit{European Journal of Operational Research}, 334, 128--140.
+
+\end{thebibliography}
+
+\end{document}
