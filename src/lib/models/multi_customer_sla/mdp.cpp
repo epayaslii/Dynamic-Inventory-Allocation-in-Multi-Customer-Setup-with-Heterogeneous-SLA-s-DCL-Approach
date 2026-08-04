@@ -386,50 +386,6 @@ namespace DynaPlex::Models {
 				}
 			}
 
-			// Per-customer SLA bookkeeping and end-of-horizon penalties.
-			for (int64_t k = 0; k < numberOfCustomers; k++)
-			{
-				// Calculate period allocation for this customer (sum across items)
-				int64_t periodAllocation = 0;
-				for (int64_t i = 0; i < numberOfItems; i++)
-					periodAllocation += state.current_allocation[k * numberOfItems + i];
-
-				// Whiteboard: BO_i(t) = BO_i(t-1) + D_i(t) - a_i(t)
-				// Accumulate backorder (unmet demand per customer)
-				state.cumulative_backorder[k] += (periodDemand[k] - periodAllocation);
-
-				state.ObservedDemand[k] += periodDemand[k];
-				state.CumulativeStockouts[k] += periodStockouts[k];
-				if (state.ObservedDemand[k] > 0)
-					state.AggregateFillRate[k] = static_cast<double>(state.ObservedDemand[k] - state.CumulativeStockouts[k]) / static_cast<double>(state.ObservedDemand[k]);
-				else
-					state.AggregateFillRate[k] = 1.0;
-
-				state.TimeRemaining[k]--;
-				if (state.TimeRemaining[k] == 0)
-				{
-					state.NumReviewPeriodPassed[k]++;
-					const int64_t exceededBackorders = static_cast<int64_t>(std::max(0.0, state.cumulative_backorder[k] - backorderAllowances[k]));
-					const double n = static_cast<double>(state.NumReviewPeriodPassed[k]);
-					if (exceededBackorders > 0) {
-						cost += exceededBackorders * penaltyCosts[k];
-						state.ShortfallPerReviewPeriod[k] = (state.ShortfallPerReviewPeriod[k] * (n - 1) + (double)exceededBackorders) / n;
-						state.SuccessPerReviewPeriod[k] = (state.SuccessPerReviewPeriod[k] * (n - 1) + 0.0) / n;
-					}
-					else {
-						state.ShortfallPerReviewPeriod[k] = (state.ShortfallPerReviewPeriod[k] * (n - 1) + 0.0) / n;
-						state.SuccessPerReviewPeriod[k] = (state.SuccessPerReviewPeriod[k] * (n - 1) + 1.0) / n;
-					}
-					state.AFRPerReviewPeriod[k] = (state.AFRPerReviewPeriod[k] * (n - 1) + state.AggregateFillRate[k]) / n;
-
-					state.cumulative_backorder[k] = 0.0;
-					state.ObservedDemand[k] = 0;
-					state.CumulativeStockouts[k] = 0;
-					state.AggregateFillRate[k] = 1.0;
-					state.TimeRemaining[k] = reviewHorizons[k];
-				}
-			}
-
 			return cost - unavoidableCostPerPeriod;
 		}
 
