@@ -16,7 +16,8 @@ namespace DynaPlex::Tests {
 		config.Add("numberOfItems", static_cast<int64_t>(2));
 		config.Add("leadTimes", DynaPlex::VarGroup::Int64Vec{ 1, 1 });
 		config.Add("holdingCosts", std::vector<double>{ 1.0, 1.0 });
-		config.Add("targetFillRates", std::vector<double>{ 0.95, 0.90 });
+		// Numeric backorder allowances (beta_k), per the paper's SLA formulation.
+		config.Add("backorderAllowances", DynaPlex::VarGroup::Int64Vec{ 6, 6 });
 		config.Add("reviewHorizons", DynaPlex::VarGroup::Int64Vec{ 6, 5 });
 		config.Add("penaltyCosts", std::vector<double>{ 600.0, 400.0 });
 		config.Add("customerDemandRates", std::vector<double>{ 3.0, 3.0 });
@@ -28,9 +29,6 @@ namespace DynaPlex::Tests {
 		// Dynamic allocation: 4 rationing rules to choose from (FCFS, SLA-gap, Proportional, Cost-greedy)
 		config.Add("totalRationingActions", static_cast<int64_t>(4));
 		config.Add("benchmarkRationingAction", static_cast<int64_t>(1));
-		// Backorder cost: high penalty to incentivize meeting customer demands
-		// (3x the holding cost per unit)
-		config.Add("backOrderCost", 3.0);
 		return config;
 	}
 

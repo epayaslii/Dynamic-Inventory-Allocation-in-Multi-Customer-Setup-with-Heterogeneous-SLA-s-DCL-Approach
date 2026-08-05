@@ -20,9 +20,10 @@ namespace DynaPlex::Models {
 			int64_t GetAction(const MDP::State& state) const;
 		};
 
-		// Rule-based dynamic policy: starts from the static composite action and
-		// shifts to a higher (lower) steady-state AFR level when some customer is
-		// below (all customers are comfortably above) their SLA target.
+		// Rule-based dynamic policy: switches rationing rule based on how close
+		// each customer's cumulative backorder is to its numeric backorder
+		// allowance (beta_k) - cost-based greedy once exceeded, SLA-gap myopic
+		// when near the limit, otherwise FCFS.
 		class GreedyDynamicPolicy
 		{
 			std::shared_ptr<const MDP> mdp;

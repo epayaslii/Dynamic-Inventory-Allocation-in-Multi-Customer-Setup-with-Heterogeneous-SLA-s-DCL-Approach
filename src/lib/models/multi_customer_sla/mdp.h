@@ -55,7 +55,6 @@ namespace DynaPlex::Models {
 			double demandAmplitude;      // seasonal variation amplitude (e.g., 0.2 for ±20%)
 			int64_t demandPeriod;        // period of seasonal cycle (e.g., 12 for monthly seasonality)
 
-			double backOrderCost;
 			double unavoidableCostPerPeriod;
 
 			// === STATIC ORDERING: Fixed base-stock level per item ===
@@ -95,6 +94,10 @@ namespace DynaPlex::Models {
 				// aggregate_vector = flattened state_vector (for features/learning)
 				std::vector<Queue<int64_t>> state_vector;
 				std::vector<int64_t> inventory_level;
+				// OH*_i(t): on-hand inventory before allocation (per the paper) -
+				// available supply for rationing this period, after order arrival
+				// but before allocations are subtracted.
+				std::vector<int64_t> inventory_level_before_allocation;
 				std::vector<int64_t> inventory_position;
 				std::vector<int64_t> aggregate_vector;
 
@@ -107,23 +110,40 @@ namespace DynaPlex::Models {
 				std::vector<int64_t> current_stockouts;
 
 				// Per-customer bookkeeping within the current review horizon (size K).
-				std::vector<int64_t> ObservedDemand;
-				std::vector<int64_t> CumulativeStockouts;
+				// We only accumulate backorder here - not raw demand or stockouts.
 				std::vector<int64_t> TimeRemaining;
-				std::vector<double> AggregateFillRate;
 				std::vector<int64_t> NumReviewPeriodPassed;
-				std::vector<double> AFRPerReviewPeriod;
 				std::vector<double> ShortfallPerReviewPeriod;
 				std::vector<double> SuccessPerReviewPeriod;
 
-				// === Per-customer cumulative backorder tracking ===
-				// Whiteboard: BO_i^(w)(t) = BO_i^(w)(t-1) + D_i^(w)(t) - a_i^(w)(t)
-				// This tracks unmet demand per customer over time
+				// === Review-horizon indexing (per the paper's t, T, r, r(t) notation) ===
+				// r_k(t): index of the review horizon customer k is currently in
+				// (r = 1, 2, 3, ...; increments each time customer k's horizon ends).
+				std::vector<int64_t> ReviewHorizonIndex;
+				// Period at which customer k's CURRENT horizon began, i.e.
+				// (r_k(t) - 1) * T_k + 1. Together with Period (t) below, this
+				// bounds the window [HorizonStartPeriod[k], t-1] that
+				// cumulative_backorder[k] (= BO-bar_k(t)) sums over.
+				std::vector<int64_t> HorizonStartPeriod;
+
+				// === Per-customer-item backorder balance (per the paper's Step 7) ===
+				// BO_{C,i}(t+1) = BO_{C,i}(t) + D_{C,i}(t) - A_{C,i}(t), flattened
+				// as [k*|I|+i]. This is a running balance that persists across
+				// review-horizon boundaries (only cleared by actual allocation) -
+				// it is NOT reset when a horizon ends.
+				std::vector<int64_t> backorder;
+
+				// === Per-customer cumulative backorder SUM tracking ===
+				// Per the paper: BO_C(t) = sum_i BO_{C,i}(t) (aggregate per
+				// customer), and BO-bar_C(t) = sum_{j=HorizonStartPeriod[C]}^{t-1}
+				// BO_C(j) - i.e. the sum of the (persisting) BO_C balance across
+				// periods within the CURRENT horizon. Unlike backorder above,
+				// this SUM is reset to 0 at the start of each new review horizon.
 				std::vector<double> cumulative_backorder;
 
 				int64_t LastRationingAction;
 				int64_t ChangeInAction;
-				int64_t Period;  // Current period (for time-varying demand calculations)
+				int64_t Period;  // Current period t (absolute time index; also used for time-varying demand)
 
 				std::vector<bool> AllowedActions;
 

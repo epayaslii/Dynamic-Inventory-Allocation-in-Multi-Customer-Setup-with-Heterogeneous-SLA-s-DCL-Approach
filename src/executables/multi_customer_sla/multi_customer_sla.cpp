@@ -11,8 +11,9 @@ using namespace DynaPlex;
 // Multi-customer, multi-item inventory management under heterogeneous SLAs.
 //
 // A single supplier serves K customers from one shared central warehouse that
-// stocks |I| items. Each customer has its OWN aggregate-fill-rate (AFR) target,
-// review-horizon length, penalty cost and demand rates. There is no lateral
+// stocks |I| items. Each customer has its OWN numeric backorder allowance
+// (beta_k, per the paper's SLA formulation), review-horizon length, penalty
+// cost and demand rates. There is no lateral
 // transshipment between customers. When total demand exceeds central stock for
 // an item, a rationing rule allocates the scarce units across customers.
 //
@@ -31,11 +32,12 @@ namespace {
 
 	// Greedy Heuristic for a single customer: returns the base-stock sequence
 	// {S^0, S^1, ...} (each a vector over items) together with the per-step
-	// steady-state AFR. holdingCosts and leadTimes are shared (central);
-	// demandRates are the customer's per-item demand rates.
+	// steady-state expected backorder (units/period). holdingCosts and
+	// leadTimes are shared (central); demandRates are the customer's
+	// per-item demand rates.
 	struct GHResult {
 		std::vector<std::vector<int64_t>> baseStockLevels; // [step][item]
-		std::vector<double> fillRates;                     // [step]
+		std::vector<double> expectedBackorder;              // [step] expected backorder units/period
 	};
 
 	std::vector<double> CalculateItemStatistics(
@@ -119,7 +121,8 @@ namespace {
 		int64_t bestRatioSKU = bestSKU();
 		for (int64_t k = 0; k < max_iter; k++) {
 			result.baseStockLevels.push_back(stockLevels);
-			result.fillRates.push_back(aggFillRate);
+			// Expected steady-state backorder (units/period) at this stock level.
+			result.expectedBackorder.push_back(totalDemandRate * (1.0 - aggFillRate));
 
 			stockLevels[bestRatioSKU]++;
 			const auto stats = CalculateItemStatistics(demandDist[bestRatioSKU], demandOverLeadtime[bestRatioSKU], stockLevels[bestRatioSKU]);
@@ -132,13 +135,15 @@ namespace {
 		return result;
 	}
 
-	// First GH step whose steady-state AFR reaches the target.
-	int64_t BenchmarkIndex(const std::vector<double>& fillRates, double target)
+	// First GH step whose expected cumulative backorder over the review horizon
+	// (expected per-period backorder x reviewHorizon) is within the customer's
+	// numeric backorder allowance (beta_k, per the paper's SLA formulation).
+	int64_t BenchmarkIndex(const std::vector<double>& expectedBackorder, int64_t reviewHorizon, int64_t allowance)
 	{
-		for (int64_t i = 0; i < (int64_t)fillRates.size(); i++)
-			if (fillRates[i] >= target)
+		for (int64_t i = 0; i < (int64_t)expectedBackorder.size(); i++)
+			if (expectedBackorder[i] * reviewHorizon <= (double)allowance)
 				return i;
-		return (int64_t)fillRates.size() - 1;
+		return (int64_t)expectedBackorder.size() - 1;
 	}
 }
 
@@ -160,8 +165,9 @@ static void RunMultiCustomerTest(int64_t rationingPolicy, bool independentBSP, b
 	std::vector<int64_t> leadTimes = { 1, 1 };
 	std::vector<double> holdingCosts = { 1.0, 1.0 };
 
-	// Per-customer SLA parameters: AFR target, review horizon, shortfall penalty.
-	std::vector<double> targetFillRates = { 0.95, 0.90 };
+	// Per-customer SLA parameters: numeric backorder allowance (beta_k), review
+	// horizon, shortfall penalty.
+	std::vector<int64_t> backorderAllowances = { 6, 8 };
 	std::vector<int64_t> reviewHorizons = { 30, 20 };
 	std::vector<double> penaltyCosts = { 600.0, 400.0 };
 
@@ -189,8 +195,10 @@ static void RunMultiCustomerTest(int64_t rationingPolicy, bool independentBSP, b
 
 	// --- Composite actions = a finite set of base-stock policies (BSPs). -----
 	// Each customer k has a GH-generated SEQUENCE of base-stock policies ordered
-	// by steady-state AFR; customerBenchmark[k] is the policy that meets its SLA
-	// target (current practice). A composite action selects a central base-stock
+	// by steady-state expected backorder; customerBenchmark[k] is the first
+	// policy whose expected cumulative backorder over the review horizon is
+	// within the customer's numeric backorder allowance (current practice).
+	// A composite action selects a central base-stock
 	// level per item to drive order-up-to behavior. Central orders are summed
 	// from the per-customer contributions.
 	//
@@ -207,10 +215,11 @@ static void RunMultiCustomerTest(int64_t rationingPolicy, bool independentBSP, b
 		const int64_t maxIter = 4000;
 		auto gh = RunGreedyHeuristic(numberOfItems, demandPerCustomer[k], variancePerCustomer[k],
 			leadTimes, holdingCosts, customerDemandRates[k], maxIter);
-		customerBenchmark[k] = BenchmarkIndex(gh.fillRates, targetFillRates[k]);
+		customerBenchmark[k] = BenchmarkIndex(gh.expectedBackorder, reviewHorizons[k], backorderAllowances[k]);
 		customerSequences[k] = gh.baseStockLevels;
 		dp.System() << "Customer " << k << ": benchmark BSP index " << customerBenchmark[k]
-			<< " (steady-state AFR " << gh.fillRates[customerBenchmark[k]] << ")" << std::endl;
+			<< " (steady-state expected backorder " << gh.expectedBackorder[customerBenchmark[k]]
+			<< " units/period, allowance " << backorderAllowances[k] << ")" << std::endl;
 	}
 
 	// Enumerate the per-customer level shifts that define the composite actions.
@@ -272,13 +281,12 @@ static void RunMultiCustomerTest(int64_t rationingPolicy, bool independentBSP, b
 	config.Add("numberOfItems", numberOfItems);
 	config.Add("leadTimes", leadTimes);
 	config.Add("holdingCosts", holdingCosts);
-	config.Add("targetFillRates", targetFillRates);
+	config.Add("backorderAllowances", backorderAllowances);
 	config.Add("reviewHorizons", reviewHorizons);
 	config.Add("penaltyCosts", penaltyCosts);
 	config.Add("customerDemandRates", customerDemandRates);
 	config.Add("demandRates", demandRatesFlat);
 	config.Add("highDemandVariance", varianceFlat);
-	config.Add("backOrderCost", 0.0);
 	config.Add("rationingPolicy", rationingPolicy); // 0=FCFS, 1=GMR, 2=proportional
 	config.Add("totalActions", totalActions);
 	config.Add("benchmarkAction", benchmarkAction);
@@ -311,7 +319,7 @@ static void RunMultiCustomerTest(int64_t rationingPolicy, bool independentBSP, b
 		: (rationingPolicy == 1 ? "GMR (SLA-gap)" : "Proportional");
 	dp.System() << "----- rationing = " << rationingName
 		<< " : static vs rule-based dynamic -----" << std::endl;
-	dp.System() << "(mean = avg cost; mean_stat_1 = AFR customer A; mean_stat_2 = AFR customer B)" << std::endl;
+	dp.System() << "(mean = avg cost; mean_stat_1/2 = shortfall vs allowance A/B; mean_stat_3/4 = cumulative backorder A/B; mean_stat_5 = avg SLA success rate)" << std::endl;
 	auto comparer = dp.GetPolicyComparer(mdp, test_config);
 	{
 		std::vector<DynaPlex::Policy> policies = { static_policy, greedy_policy };

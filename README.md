@@ -34,14 +34,16 @@ Each customer k has:
 
 | Variable | Meaning | Size |
 |----------|---------|------|
-| **OH_i(t)** | On-hand inventory (can be negative) | I features |
+| **OH_i(t)** | On-hand inventory after allocation (can be negative) | I features |
+| **OH\*_i(t)** | On-hand inventory before allocation (available for rationing) | I features |
 | **Q_i(t-1...t-L)** | Pipeline orders in transit | I×L features |
 | **BO_{k,i}(t)** | Backorder per customer-item | C×I features |
 | **D_{k,i}(t)** | Realized demand (current period) | C×I features |
 | **Σ̄BO_k(t)** | Cumulative backorder within review horizon | C features |
 | **T_rem(t)** | Time remaining in review horizon | 1 feature |
+| **β_k** | SLA backorder allowance per customer | C features |
 
-**Total State Dimension:** I + I·L + C·I + C·I + C + 1 + C features
+**Total State Dimension:** I + I + I·L + C·I + C·I + C + 1 + C features
 
 ### Decision Variables
 
@@ -75,15 +77,16 @@ Four built-in rationing strategies (extensible):
 
 ### Holding Cost (Every Period)
 ```
-C_hold(t) = Σ_i h_i * OH_i(t+1)
+C_hold(t) = Σ_i h_i * OH*_i(t)
 ```
+Charged on inventory available before allocation (OH\*), not what's left after.
 
 ### SLA Penalty (At Horizon End)
 ```
 C_penalty = Σ_k p_k * max(0, Σ̄BO_k(T_k) - β_k)
 ```
 
-## Period Workflow (9 Steps)
+## Period Workflow (8 Steps)
 
 1. **Receive Orders:** Q_i(t-L) arrives and is added to on-hand inventory
 2. **Observe IP:** Calculate inventory position: IP_i = OH_i + Σ_pipeline - Σ_BO
@@ -91,9 +94,8 @@ C_penalty = Σ_k p_k * max(0, Σ̄BO_k(T_k) - β_k)
 4. **Observe Demand:** D_{k,i}(t) realized per customer-item pair
 5. **Check Rationing:** Is Σ_BO + Σ_D > OH? (per item)
 6. **Allocate:** Policy π(s_t) decides allocation when rationing needed
-7. **Update State:** OH and BO updated based on allocations
-8. **Calculate Costs:** Holding costs every period, SLA penalties at horizon end
-9. **Track Metrics:** Cumulative backorder, fill rate per customer
+7. **Update State:** OH, BO and cumulative backorder Σ̄BO_k updated based on allocations (Σ̄BO_k resets at horizon end)
+8. **Calculate Costs:** Holding costs every period, SLA penalties (vs. backorder allowance β_k) at horizon end
 
 ## Deep Controlled Learning
 
@@ -129,20 +131,15 @@ The system uses DCL to learn an optimal allocation policy by:
 │   │   ├── multi_customer_sla.cpp           # Main simulation entry point
 │   │   ├── multi_customer_sla_simple.cpp    # Simplified example
 │   │   ├── dcl_allocation_learn_full.cpp    # Full DCL learning
-│   │   ├── dcl_rationing_learning.cpp       # Rationing action learning
 │   │   ├── bsl_sensitivity_analysis.cpp     # Base-stock level sensitivity
 │   │   └── action3_comparison.cpp           # Cost-based greedy comparison
 │   └── tests/
 │       └── t_multi_customer_sla.cpp  # Unit tests
 ├── docs/
-│   ├── WHITEBOARD_EQUATIONS_EXPLAINED.md
-│   ├── DCL_ALLOCATION_LEARNING_RESULTS.md
-│   ├── COST_COMPONENT_ANALYSIS.md
-│   └── DCL_SIMULATION_DETAILED_WALKTHROUGH.md
+│   └── paper_improved_complete.tex   # Full paper with model formulation
 ├── gc-lsn-weights/
 │   ├── GC-LSN.json                  # Network architecture
-│   ├── GC-LSN.pth                   # Pre-trained weights
-│   └── All-GC-LSN-Results.out       # Benchmark results
+│   └── GC-LSN.pth                   # Pre-trained weights
 └── README.md (this file)
 ```
 
@@ -188,6 +185,10 @@ config.Add("backorderAllowances", std::vector<int64_t>{6, 8});    // β_k
 config.Add("reviewHorizons", std::vector<int64_t>{20, 20});       // T_k
 config.Add("penaltyCosts", std::vector<double>{50.0, 60.0});      // p_k
 
+// Total demand rate per customer (across items), used to normalize
+// cumulative-stockout and observed-demand state features
+config.Add("customerDemandRates", std::vector<double>{2.3, 1.9});
+
 // Base-stock levels (per item)
 config.Add("baseStockLevel", std::vector<int64_t>{25, 30, 20});
 
@@ -219,7 +220,7 @@ See `src/executables/multi_customer_sla/multi_customer_sla_simple.cpp` for a com
 1. Creates a 2-customer, 2-item inventory system
 2. Runs a base-stock policy with proportional rationing
 3. Tracks cumulative backorders and SLA penalties
-4. Reports total cost and fill rates
+4. Reports total cost and each customer's cumulative backorder against its allowance
 
 ## Learning Experiments
 

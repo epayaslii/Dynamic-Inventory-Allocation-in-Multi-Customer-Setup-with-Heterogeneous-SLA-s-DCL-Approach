@@ -33,7 +33,6 @@ namespace DynaPlex::Models {
 			config.Get("customerDemandRates", customerDemandRates);
 			config.Get("demandRates", demandRates);
 			config.Get("highDemandVariance", highDemandVariance);
-			config.GetOrDefault("backOrderCost", backOrderCost, 0.0);
 			config.GetOrDefault("unavoidableCostPerPeriod", unavoidableCostPerPeriod, 0.0);
 			config.GetOrDefault("demandAmplitude", demandAmplitude, 0.0);
 			config.GetOrDefault("demandPeriod", demandPeriod, static_cast<int64_t>(12));
@@ -77,14 +76,14 @@ namespace DynaPlex::Models {
 			// The action parameter (action) is the RATIONING RULE choice (0,1,2).
 			// Ordering is STATIC and uses the FIXED baseStockLevel vector.
 			//
-			// For each item i:
-			//   IP[i] = on_hand[i] + on_the_way[i]  (sum of state_vector[i])
+			// For each item i (paper Step 2):
+			//   IP[i] = OH*[i] + on_the_way[i] - sum_C BO_{C,i}(t)
 			//   Q[i] = max(0, baseStockLevel[i] - IP[i])
 			//   These orders arrive in (leadTime[i]) periods
 
 			for (int64_t i = 0; i < numberOfItems; i++)
 			{
-				// Calculate Inventory Position = on-hand + on-the-way
+				// Calculate Inventory Position = on-hand + on-the-way - backorders
 				int64_t onHand = state.state_vector[i].front();
 				int64_t onTheWay = 0;
 				auto it = state.state_vector[i].begin();
@@ -93,7 +92,10 @@ namespace DynaPlex::Models {
 					onTheWay += *it;
 					++it;
 				}
-				int64_t ip = onHand + onTheWay;
+				int64_t backorderSum = 0;
+				for (int64_t k = 0; k < numberOfCustomers; k++)
+					backorderSum += state.backorder[k * numberOfItems + i];
+				int64_t ip = onHand + onTheWay - backorderSum;
 
 				// Order to maintain base stock level
 				const int64_t toOrder = baseStockLevel[i] - ip;
@@ -149,7 +151,7 @@ namespace DynaPlex::Models {
 			double cost = 0.0;
 			state.aggregate_vector.clear();
 
-			// === 9-STEP PERIOD WORKFLOW (Per work_summary.md Model) ===
+			// === PERIOD WORKFLOW (per docs/paper_improved_complete.tex, Section "Period Workflow") ===
 			// STEP 1: RECEIVE ORDERS from (leadTime) periods ago
 			// STEP 2: OBSERVE CURRENT IP(t)
 			// STEP 3: CALCULATE Q(t) [done in ModifyStateWithAction]
@@ -159,7 +161,7 @@ namespace DynaPlex::Models {
 			// STEP 6: ALLOCATIONS A_{k,i}(t) → CALL π (if rationing needed)
 			// STEP 7: UPDATE INVENTORY & BACKORDERS
 			// STEP 8: CALCULATE COST
-			// STEP 9: UPDATE AFR (CUMULATIVE OVER REVIEW CYCLE)
+			// STEP 9: UPDATE PER-CUSTOMER BACKORDER TRACKING (CUMULATIVE OVER REVIEW CYCLE)
 
 			state.Period++;
 			state.current_demand = event;
@@ -193,53 +195,55 @@ namespace DynaPlex::Models {
 			}
 
 			std::vector<int64_t> periodStockouts(numberOfCustomers, 0);
-			std::vector<int64_t> periodDemand(numberOfCustomers, 0);
+
+			// Each customer's total backorder across items, as of the start of
+			// this period (= BO_C(t) = sum_i BO_{C,i}(t), per the paper).
+			// Used by Action 3's exploratory heuristic below.
+			std::vector<int64_t> priorBackorderTotal(numberOfCustomers, 0);
+			for (int64_t k = 0; k < numberOfCustomers; k++)
+				for (int64_t i = 0; i < numberOfItems; i++)
+					priorBackorderTotal[k] += state.backorder[k * numberOfItems + i];
 
 			// === STEP 1-5: Process each item ===
 			for (int64_t i = 0; i < numberOfItems; i++)
 			{
 				auto& currentState = state.state_vector[i];
 				int64_t oh = currentState.pop_front();  // STEP 1-2: On-hand at start of period
+				state.inventory_level_before_allocation[i] = oh;  // OH*_i(t): available supply before allocation
 
-				// STEP 4: Total demand for this item across all customers
-				int64_t totalDemand = 0;
-				for (int64_t k = 0; k < numberOfCustomers; k++)
-					totalDemand += event[k * numberOfItems + i];
-
-				for (int64_t k = 0; k < numberOfCustomers; k++)
-					periodDemand[k] += event[k * numberOfItems + i];
-
-				// STEP 5: Check if rationing needed
-				// Rationing check: Σ_k BO_k^(i)(t-1) + D_i(t) > OH_i(t)?
-				// This checks if total backlog plus new demand exceeds available on-hand
-				int64_t boSum = 0;
+				// STEP 4-5: What each customer is owed for this item - prior
+				// backorder BO_{k,i}(t) plus this period's realized demand
+				// D_{k,i}(t). This is what Step 5 rations against, and what a
+				// "no rationing" period allocates in full.
+				std::vector<int64_t> owed(numberOfCustomers, 0);
+				int64_t totalOwed = 0;
 				for (int64_t k = 0; k < numberOfCustomers; k++) {
-					// BO_k^(i) comes from cumulative_backorder, but we track per-customer total
-					// For per-item backorder, we estimate from period stockouts
-					// Approximate: use CumulativeStockouts as proxy for backorder level
-					boSum += state.CumulativeStockouts[k];
+					const int64_t d_ki = event[k * numberOfItems + i];
+					owed[k] = state.backorder[k * numberOfItems + i] + d_ki;
+					totalOwed += owed[k];
 				}
 
-				bool needsRationing = (boSum + totalDemand) > oh;
+				// STEP 5: Check if rationing needed
+				// Rationing check: Demand_i(t) = Σ_C [BO_{C,i}(t) + D_{C,i}(t)] > Available_i(t) = OH*_i(t)?
+				bool needsRationing = totalOwed > oh;
 				const int64_t available = oh > 0 ? oh : 0;
 
 				// STEP 6: ALLOCATION based on rationing rule
-				if (!needsRationing || available >= totalDemand) {
-					// No rationing needed: full allocation
+				if (!needsRationing || available >= totalOwed) {
+					// No rationing needed: full allocation clears all backlog + new demand
 					for (int64_t k = 0; k < numberOfCustomers; k++) {
-						const int64_t demand_ki = event[k * numberOfItems + i];
-						state.current_allocation[k * numberOfItems + i] = demand_ki;
+						state.current_allocation[k * numberOfItems + i] = owed[k];
 						state.current_stockouts[k * numberOfItems + i] = 0;
+						state.backorder[k * numberOfItems + i] = 0;
 					}
 				}
 				else if (state.LastRationingAction == 2) {
-					// Action 2: Proportional rationing
+					// Action 2: Proportional rationing (against backlog + new demand)
 					std::vector<int64_t> served(numberOfCustomers, 0);
 					int64_t handedOut = 0;
 					for (int64_t k = 0; k < numberOfCustomers; k++) {
-						const int64_t demand_ki = event[k * numberOfItems + i];
-						if (totalDemand > 0)
-							served[k] = (available * demand_ki) / totalDemand;
+						if (totalOwed > 0)
+							served[k] = (available * owed[k]) / totalOwed;
 						handedOut += served[k];
 					}
 					int64_t remainder = available - handedOut;
@@ -247,27 +251,24 @@ namespace DynaPlex::Models {
 					for (int64_t k = 0; k < numberOfCustomers; k++)
 						fracOrder[k] = k;
 					std::sort(fracOrder.begin(), fracOrder.end(), [&](int64_t a, int64_t b) {
-						const int64_t da = event[a * numberOfItems + i];
-						const int64_t db = event[b * numberOfItems + i];
-						return (available * da) % totalDemand > (available * db) % totalDemand;
+						return (available * owed[a]) % totalOwed > (available * owed[b]) % totalOwed;
 						});
 					for (int64_t pos = 0; pos < numberOfCustomers && remainder > 0; pos++) {
 						const int64_t k = fracOrder[pos];
-						const int64_t demand_ki = event[k * numberOfItems + i];
-						if (served[k] < demand_ki) { served[k]++; remainder--; }
+						if (served[k] < owed[k]) { served[k]++; remainder--; }
 					}
 					for (int64_t k = 0; k < numberOfCustomers; k++) {
-						const int64_t demand_ki = event[k * numberOfItems + i];
 						state.current_allocation[k * numberOfItems + i] = served[k];
-						state.current_stockouts[k * numberOfItems + i] = demand_ki - served[k];
-						periodStockouts[k] += demand_ki - served[k];
+						state.current_stockouts[k * numberOfItems + i] = owed[k] - served[k];
+						state.backorder[k * numberOfItems + i] = owed[k] - served[k];
+						periodStockouts[k] += owed[k] - served[k];
 					}
 				}
 				else if (state.LastRationingAction == 3) {
-					// Action 3: Cost-based greedy
+					// Action 3: Cost-based greedy (exploratory, outside paper scope)
 					std::vector<int64_t> notServedSoFar(numberOfCustomers, 0);
 					for (int64_t k = 0; k < numberOfCustomers; k++) {
-						notServedSoFar[k] = event[k * numberOfItems + i];
+						notServedSoFar[k] = owed[k];
 					}
 
 					for (int64_t unit = 0; unit < available; unit++) {
@@ -276,7 +277,11 @@ namespace DynaPlex::Models {
 
 						for (int64_t k = 0; k < numberOfCustomers; k++) {
 							if (notServedSoFar[k] > 0) {
-								const int64_t priorC = state.CumulativeStockouts[k] + periodStockouts[k];
+								// Backorder on OTHER items (excludes this item's stale
+								// pre-period value, already folded into notServedSoFar)
+								// plus already-finalized backorder from earlier items
+								// processed this period.
+								const int64_t priorC = (priorBackorderTotal[k] - state.backorder[k * numberOfItems + i]) + periodStockouts[k];
 								const int64_t totalWithheld = priorC + notServedSoFar[k];
 								const double marginalCost = (totalWithheld > maxAllowed[k]) ? penaltyCosts[k] : 0.0;
 								if (marginalCost > bestCost) {
@@ -293,37 +298,42 @@ namespace DynaPlex::Models {
 					}
 
 					for (int64_t k = 0; k < numberOfCustomers; k++) {
-						const int64_t demand_ki = event[k * numberOfItems + i];
 						state.current_stockouts[k * numberOfItems + i] = notServedSoFar[k];
+						state.backorder[k * numberOfItems + i] = notServedSoFar[k];
 						periodStockouts[k] += notServedSoFar[k];
 					}
 				}
 				else {
-					// Action 0 (FCFS) or Action 1 (SLA-gap): serve sequentially
+					// Action 0 (FCFS) or Action 1 (SLA-gap): serve sequentially against backlog + new demand
 					int64_t remaining = available;
 					for (int64_t pos = 0; pos < numberOfCustomers; pos++) {
 						const int64_t k = order[pos];
-						const int64_t demand_ki = event[k * numberOfItems + i];
-						const int64_t served = std::min(remaining, demand_ki);
+						const int64_t served = std::min(remaining, owed[k]);
 						remaining -= served;
 						state.current_allocation[k * numberOfItems + i] = served;
-						state.current_stockouts[k * numberOfItems + i] = demand_ki - served;
-						periodStockouts[k] += demand_ki - served;
+						state.current_stockouts[k * numberOfItems + i] = owed[k] - served;
+						state.backorder[k * numberOfItems + i] = owed[k] - served;
+						periodStockouts[k] += owed[k] - served;
 					}
 				}
 
 				// STEP 7-8: UPDATE INVENTORY AND COSTS
-				const int64_t newOnHand = oh - totalDemand;
+				// OH_i(t+1) = OH*_i(t) - Σ_C A_{C,i}(t): allocation is always
+				// bounded by available supply, so on-hand never goes negative -
+				// unmet demand is tracked separately via state.backorder.
+				int64_t periodAllocationThisItem = 0;
+				for (int64_t k = 0; k < numberOfCustomers; k++)
+					periodAllocationThisItem += state.current_allocation[k * numberOfItems + i];
+				const int64_t newOnHand = oh - periodAllocationThisItem;
 				state.inventory_level[i] = newOnHand;
-				state.inventory_position[i] -= totalDemand;
+				state.inventory_position[i] -= periodAllocationThisItem;
 
-				// Holding cost: h_i * OH_i(t+1) for leftover stock
-				if (newOnHand > 0) {
-					cost += newOnHand * holdingCosts[i];
+				// Holding cost (paper Step 8): h_i * OH*_i(t), charged on the
+				// inventory available before allocation - the stock actually
+				// carried this period - not on what's left after allocation.
+				if (oh > 0) {
+					cost += static_cast<double>(oh) * holdingCosts[i];
 				}
-
-				// Backorder cost: b * max(0, BO_k(t) - BO_k(t-1)) for this item
-				// This is tracked per-customer in the cost calculation below
 
 				// Update queue for next period
 				if (leadTimes[i] == 0)
@@ -337,27 +347,17 @@ namespace DynaPlex::Models {
 			// STEP 8-9: Per-customer SLA bookkeeping and costs
 			for (int64_t k = 0; k < numberOfCustomers; k++)
 			{
-				// Calculate period allocation and demand for this customer
-				int64_t periodAllocation = 0;
+				// STEP 7/9: BO_C(t+1) = sum_i BO_{C,i}(t+1) (per-item backorder was
+				// already updated to its new value in the item loop above).
+				// cumulative_backorder[k] (= BO-bar_k) accumulates this over the
+				// window [HorizonStartPeriod[k], state.Period] of the current
+				// horizon r_k = ReviewHorizonIndex[k], and resets to 0 when that
+				// horizon ends. We only ever track backorder accumulation here -
+				// not raw demand or stockout accumulation.
+				int64_t newBO_C = 0;
 				for (int64_t i = 0; i < numberOfItems; i++)
-					periodAllocation += state.current_allocation[k * numberOfItems + i];
-
-				// STEP 7: Update backorder: BO_k(t) = BO_k(t-1) + D_k(t) - A_k(t)
-				double previousBO = state.cumulative_backorder[k];
-				state.cumulative_backorder[k] += (periodDemand[k] - periodAllocation);
-				int64_t newDebt = static_cast<int64_t>(std::max(0.0, state.cumulative_backorder[k] - previousBO));
-
-				// STEP 8: Add backorder cost for new debt this period
-				// Cost: b_k * max(0, BO_k(t) - BO_k(t-1))
-				cost += backOrderCost * newDebt;
-
-				// STEP 9: Update AFR tracking
-				state.ObservedDemand[k] += periodDemand[k];
-				state.CumulativeStockouts[k] += periodStockouts[k];
-				if (state.ObservedDemand[k] > 0)
-					state.AggregateFillRate[k] = static_cast<double>(state.ObservedDemand[k] - state.CumulativeStockouts[k]) / static_cast<double>(state.ObservedDemand[k]);
-				else
-					state.AggregateFillRate[k] = 1.0;
+					newBO_C += state.backorder[k * numberOfItems + i];
+				state.cumulative_backorder[k] += static_cast<double>(newBO_C);
 
 				state.TimeRemaining[k]--;
 				if (state.TimeRemaining[k] == 0)
@@ -375,14 +375,16 @@ namespace DynaPlex::Models {
 						state.ShortfallPerReviewPeriod[k] = (state.ShortfallPerReviewPeriod[k] * (n - 1) + 0.0) / n;
 						state.SuccessPerReviewPeriod[k] = (state.SuccessPerReviewPeriod[k] * (n - 1) + 1.0) / n;
 					}
-					state.AFRPerReviewPeriod[k] = (state.AFRPerReviewPeriod[k] * (n - 1) + state.AggregateFillRate[k]) / n;
 
-					// Reset cumulative backorder and counters for next review cycle
+					// Reset cumulative backorder sum and counters for next review cycle
+					// (note: state.backorder itself is NOT reset - it persists)
 					state.cumulative_backorder[k] = 0.0;
-					state.ObservedDemand[k] = 0;
-					state.CumulativeStockouts[k] = 0;
-					state.AggregateFillRate[k] = 1.0;
 					state.TimeRemaining[k] = reviewHorizons[k];
+
+					// Advance to the next review horizon: r_k(t) -> r_k(t)+1,
+					// with the new horizon starting next period (t+1).
+					state.ReviewHorizonIndex[k]++;
+					state.HorizonStartPeriod[k] = state.Period + 1;
 				}
 			}
 
@@ -391,26 +393,28 @@ namespace DynaPlex::Models {
 
 		void MDP::GetFeatures(const State& state, DynaPlex::Features& features) const {
 			// Add inventory level and position per item (for DCL feature learning)
-			// Whiteboard signals: IL(t) shows crisis (can be negative), IP(t) shows recovery (pipeline)
+			// OH(t) shows crisis (can be negative), OH*(t) is pre-allocation
+			// available supply, IP(t) shows recovery (pipeline)
 			for (int64_t i = 0; i < numberOfItems; i++) {
 				features.Add(static_cast<float>(state.inventory_level[i]));
+				features.Add(static_cast<float>(state.inventory_level_before_allocation[i]));
 				features.Add(static_cast<float>(state.inventory_position[i]));
 			}
 
 			features.Add(state.aggregate_vector);
+
+			// D_{C,i}(t): realized demand THIS period, per customer-item pair.
+			// No accumulation - only this period's demand is exposed, so DCL
+			// can react to it when choosing the next rationing action.
+			for (int64_t k = 0; k < numberOfCustomers; k++)
+				for (int64_t i = 0; i < numberOfItems; i++)
+					features.Add(static_cast<float>(state.current_demand[k * numberOfItems + i]));
+
 			for (int64_t k = 0; k < numberOfCustomers; k++)
 			{
-				const int64_t elapsed = reviewHorizons[k] - state.TimeRemaining[k];
-				if (elapsed > 0) {
-					features.Add(state.AggregateFillRate[k]);
-					features.Add(static_cast<float>(state.CumulativeStockouts[k]) / static_cast<float>(customerDemandRates[k] * elapsed));
-					features.Add(static_cast<float>(state.ObservedDemand[k]) / static_cast<float>(customerDemandRates[k] * elapsed));
-				}
-				else {
-					features.Add(1.0);
-					features.Add(0.0);
-					features.Add(0.0);
-				}
+				// Progress toward the customer's numeric backorder target (beta_k):
+				// cumulative backorder so far relative to the allowance.
+				features.Add(static_cast<float>(state.cumulative_backorder[k]) / static_cast<float>(backorderAllowances[k]));
 				features.Add(static_cast<float>(state.TimeRemaining[k]) / static_cast<float>(reviewHorizons[k]));
 			}
 		}
@@ -418,9 +422,7 @@ namespace DynaPlex::Models {
 		std::vector<double> MDP::ReturnUsefulStatistics(const State& state) const
 		{
 			std::vector<double> statistics;
-			statistics.reserve(3 * numberOfCustomers + 1);
-			for (int64_t k = 0; k < numberOfCustomers; k++)
-				statistics.push_back(state.AFRPerReviewPeriod[k]);
+			statistics.reserve(2 * numberOfCustomers + 1);
 			for (int64_t k = 0; k < numberOfCustomers; k++)
 				statistics.push_back(state.ShortfallPerReviewPeriod[k]);
 			for (int64_t k = 0; k < numberOfCustomers; k++)
@@ -434,17 +436,16 @@ namespace DynaPlex::Models {
 
 		void MDP::ResetHiddenStateVariables(State& state, RNG& rng) const
 		{
+			state.backorder.assign(numberOfCustomers * numberOfItems, 0);
 			for (int64_t k = 0; k < numberOfCustomers; k++)
 			{
-				state.ObservedDemand[k] = 0;
-				state.CumulativeStockouts[k] = 0;
-				state.AggregateFillRate[k] = 1.0;
 				state.TimeRemaining[k] = reviewHorizons[k];
 				state.NumReviewPeriodPassed[k] = 0;
-				state.AFRPerReviewPeriod[k] = 1.0;
 				state.ShortfallPerReviewPeriod[k] = 0.0;
 				state.SuccessPerReviewPeriod[k] = 1.0;
 				state.cumulative_backorder[k] = 0.0;
+				state.ReviewHorizonIndex[k] = 1;
+				state.HorizonStartPeriod[k] = state.Period + 1;
 			}
 			state.ChangeInAction = 0;
 		}
@@ -466,6 +467,7 @@ namespace DynaPlex::Models {
 					queue.push_back(0);  // no orders in pipeline initially
 				state.state_vector.push_back(queue);
 				state.inventory_level.push_back(baseStockLevel[i]);
+				state.inventory_level_before_allocation.push_back(baseStockLevel[i]);
 				state.inventory_position.push_back(baseStockLevel[i]);
 				aggregateVectorLength += leadTimes[i] == 0 ? 1 : leadTimes[i];
 			}
@@ -474,24 +476,30 @@ namespace DynaPlex::Models {
 			for (int64_t i = 0; i < numberOfItems; i++)
 				state.aggregate_vector.insert(state.aggregate_vector.end(), state.state_vector[i].begin(), state.state_vector[i].end());
 
-			state.current_demand.clear();
+			// Sized (not empty): GetFeatures reads current_demand before any
+			// event has been incorporated (on the very first AwaitAction state).
+			state.current_demand.assign(numberOfCustomers * numberOfItems, 0);
 			state.current_allocation.assign(numberOfCustomers * numberOfItems, 0);
 			state.current_stockouts.assign(numberOfCustomers * numberOfItems, 0);
 			state.Period = 0;
 
 			// Initialize per-customer SLA tracking
-			state.ObservedDemand.assign(numberOfCustomers, 0);
-			state.CumulativeStockouts.assign(numberOfCustomers, 0);
-			state.AggregateFillRate.assign(numberOfCustomers, 1.0);
 			state.NumReviewPeriodPassed.assign(numberOfCustomers, 0);
-			state.AFRPerReviewPeriod.assign(numberOfCustomers, 1.0);
 			state.ShortfallPerReviewPeriod.assign(numberOfCustomers, 0.0);
 			state.SuccessPerReviewPeriod.assign(numberOfCustomers, 1.0);
 			state.TimeRemaining.assign(numberOfCustomers, 0);
 			for (int64_t k = 0; k < numberOfCustomers; k++)
 				state.TimeRemaining[k] = reviewHorizons[k];
 
-			// Initialize cumulative backorder tracking
+			// Review-horizon indexing: every customer starts in horizon r=1,
+			// which begins at period t=1 (state.Period is incremented to 1 on
+			// the first call to ModifyStateWithEvent).
+			state.ReviewHorizonIndex.assign(numberOfCustomers, 1);
+			state.HorizonStartPeriod.assign(numberOfCustomers, 1);
+
+			// Initialize backorder tracking: per-item balance BO_{C,i}, and the
+			// horizon-scoped cumulative sum BO-bar_C.
+			state.backorder.assign(numberOfCustomers * numberOfItems, 0);
 			state.cumulative_backorder.assign(numberOfCustomers, 0.0);
 
 			// Initialize rationing action tracking
@@ -508,9 +516,6 @@ namespace DynaPlex::Models {
 			vars.Get("cat", state.cat);
 			vars.Get("aggregate_vector", state.aggregate_vector);
 			vars.Get("inventory_position", state.inventory_position);
-			vars.Get("ObservedDemand", state.ObservedDemand);
-			vars.Get("CumulativeStockouts", state.CumulativeStockouts);
-			vars.Get("AggregateFillRate", state.AggregateFillRate);
 			vars.Get("TimeRemaining", state.TimeRemaining);
 			return state;
 		}
@@ -521,9 +526,6 @@ namespace DynaPlex::Models {
 			vars.Add("cat", cat);
 			vars.Add("aggregate_vector", aggregate_vector);
 			vars.Add("inventory_position", inventory_position);
-			vars.Add("ObservedDemand", ObservedDemand);
-			vars.Add("CumulativeStockouts", CumulativeStockouts);
-			vars.Add("AggregateFillRate", AggregateFillRate);
 			vars.Add("TimeRemaining", TimeRemaining);
 			return vars;
 		}
@@ -538,7 +540,7 @@ namespace DynaPlex::Models {
 			registry.Register<BaseStockPolicy>("base_stock",
 				"Static composite action (fixed base-stock levels) for all customers.");
 			registry.Register<GreedyDynamicPolicy>("greedy_dynamic",
-				"Rule-based dynamic composite-action policy reacting to per-customer AFR.");
+				"Rule-based dynamic composite-action policy reacting to per-customer cumulative backorder relative to its allowance.");
 		}
 
 		void Register(DynaPlex::Registry& registry)
