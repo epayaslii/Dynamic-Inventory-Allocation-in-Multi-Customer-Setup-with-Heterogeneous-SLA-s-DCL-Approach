@@ -328,11 +328,11 @@ namespace DynaPlex::Models {
 				state.inventory_level[i] = newOnHand;
 				state.inventory_position[i] -= periodAllocationThisItem;
 
-				// Holding cost (paper Step 8): h_i * OH*_i(t), charged on the
-				// inventory available before allocation - the stock actually
-				// carried this period - not on what's left after allocation.
-				if (oh > 0) {
-					cost += static_cast<double>(oh) * holdingCosts[i];
+				// Holding cost (paper Step 8): h_i * OH_i(t+1), charged on the
+				// inventory remaining after allocation - not on what was
+				// available before allocation.
+				if (newOnHand > 0) {
+					cost += static_cast<double>(newOnHand) * holdingCosts[i];
 				}
 
 				// Update queue for next period

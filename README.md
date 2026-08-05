@@ -77,9 +77,9 @@ Four built-in rationing strategies (extensible):
 
 ### Holding Cost (Every Period)
 ```
-C_hold(t) = Σ_i h_i * OH*_i(t)
+C_hold(t) = Σ_i h_i * OH_i(t+1)
 ```
-Charged on inventory available before allocation (OH\*), not what's left after.
+Charged on inventory remaining after allocation (OH after, not OH\* before).
 
 ### SLA Penalty (At Horizon End)
 ```

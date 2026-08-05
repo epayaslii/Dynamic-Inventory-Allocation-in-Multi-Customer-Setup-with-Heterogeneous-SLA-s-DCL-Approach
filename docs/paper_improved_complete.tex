@@ -435,10 +435,10 @@ Costs are incurred based on the current period's outcomes and position in the re
 
 \textbf{Holding Cost (every period):}
 \begin{equation}
-    C_{\text{hold}}(t) = \sum_i h_i \cdot \text{OH}^*_i(t)
+    C_{\text{hold}}(t) = \sum_i h_i \cdot \text{OH}_i(t+1)
 \end{equation}
 
-Note: Holding cost is based on available inventory BEFORE allocation ($\text{OH}^*_i(t)$), as this represents the stock that must be maintained.
+Note: Holding cost is based on on-hand inventory AFTER allocation ($\text{OH}_i(t+1)$), i.e. what remains once this period's demand has been served.
 
 \textbf{SLA Penalty:}
 \begin{equation}
@@ -475,7 +475,7 @@ The allocation policy $\pi(s_t)$ is chosen to minimize total expected cost over 
 
 where the expectation is over stochastic demand realizations $D_{C,i}(t)$, and:
 \begin{itemize}
-    \item For interior periods ($t < r(t) \cdot T$): $C(t) = C_{\text{hold}}(t) = \sum_i h_i \cdot \text{OH}^*_i(t)$
+    \item For interior periods ($t < r(t) \cdot T$): $C(t) = C_{\text{hold}}(t) = \sum_i h_i \cdot \text{OH}_i(t+1)$
     \item For horizon end ($t = r(t) \cdot T$): $C(t) = C_{\text{hold}}(t) + C_{\text{penalty}}(t)$, where $C_{\text{penalty}}(t) = \sum_C p_C \cdot \max(0, \overline{\text{BO}}_C(t) - \beta_C)$
     \item $\pi: \mathcal{S} \to \mathbb{R}^{C \times I}$ is the allocation policy determining $A_{C,i}(t)$ each period (independent of the static ordering policy)
 \end{itemize}
