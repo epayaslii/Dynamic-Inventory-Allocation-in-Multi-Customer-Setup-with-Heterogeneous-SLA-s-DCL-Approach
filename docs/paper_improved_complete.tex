@@ -118,6 +118,27 @@
 
 We consider a supplier that manages inventory at a single location and serves multiple customers under heterogeneous Service Level Agreements (SLAs). The supplier stocks a set of items $I$ (indexed $i \in I$, $|I| \geq 1$) and serves a set of customers $C$ (indexed $c \in C$, $|C| \geq 1$). Each customer-item pair has its own, generally heterogeneous, stochastic demand process, so different customers place very different demands on the same shared stock.
 
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[
+        node distance=2.2cm and 2.8cm,
+        supplier/.style={rectangle, draw, thick, rounded corners, minimum width=3.4cm, minimum height=1.4cm, align=center, fill=gray!10},
+        customer/.style={rectangle, draw, thick, rounded corners, minimum width=3.0cm, minimum height=1.2cm, align=center, fill=blue!5},
+        arrow/.style={-{Latex[length=2.5mm]}, thick}
+    ]
+        \node[supplier] (S) {Supplier\\[2pt] \footnotesize items $i \in I$, base-stock $S_i$};
+        \node[customer, below left=of S] (C1) {Customer 1\\[2pt] \footnotesize $\beta_1$, demand rate $\lambda_{1,i}$};
+        \node[customer, below=of S] (C2) {Customer 2\\[2pt] \footnotesize $\beta_2$, demand rate $\lambda_{2,i}$};
+        \node[customer, below right=of S] (C3) {Customer $|C|$\\[2pt] \footnotesize $\beta_{|C|}$, demand rate $\lambda_{|C|,i}$};
+
+        \draw[arrow] (S) -- (C1) node[midway, above left, sloped, font=\scriptsize] {$A_{1,i}(t)$};
+        \draw[arrow] (S) -- (C2) node[midway, right, font=\scriptsize] {$A_{2,i}(t)$};
+        \draw[arrow] (S) -- (C3) node[midway, above right, sloped, font=\scriptsize] {$A_{|C|,i}(t)$};
+    \end{tikzpicture}
+    \caption{The supplier stocks items $i \in I$ under a single base-stock policy and allocates available supply $A_{c,i}(t)$ to each customer $c \in C$ every period. Customers differ in demand rate $\lambda_{c,i}$ and in their SLA backorder allowance $\beta_c$ — a stricter (lower) $\beta_c$ means less tolerance for backorders.}
+    \label{fig:problem-setup}
+\end{figure}
+
 Every period, the supplier makes two kinds of decisions, and this paper is concerned with both: (i) how much of each item to \emph{order} to replenish stock, and (ii) how to \emph{allocate} available on-hand stock across customers whenever it is insufficient to cover everyone immediately. Ordering follows a static base-stock policy with a fixed order-up-to level $S_i$ per item, set at the tactical level and held fixed in this paper. Allocation, by contrast, is a dynamic decision made every period: whenever on-hand stock cannot cover all outstanding demand for an item, the supplier must decide which customers to serve first. This is where the model's flexibility lies, and it is needed precisely because customers' SLAs are heterogeneous — some customers can tolerate more backorders than others, and an allocation policy that ignores this wastes stock protecting customers who do not need it, at the expense of customers who do.
 
 Each customer $c$'s service level is expressed as a numeric backorder allowance $\beta_c \geq 0$: the maximum cumulative backorder units customer $c$ can accumulate across items within a review horizon of $T$ periods before a penalty applies. Concretely, if by the end of a review horizon customer $c$'s cumulative backorders exceed $\beta_c$ by some amount $x$, the supplier pays a penalty of $p_c \cdot x$, where $p_c > 0$ is the per-unit penalty cost (e.g., $\beta_1 = 6$ and $\beta_2 = 8$ units for two customers with different SLA strictness). Because review horizons repeat indefinitely over the supplier's operation, this is a recurring, long-run cost structure rather than a one-off constraint — the same recurring finite-horizon SLA structure studied for a single, aggregate service metric by \citet{temizoz2026ace}; here we instead track backorders per customer under heterogeneous, customer-specific allowances.
