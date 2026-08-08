@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository implements a sophisticated inventory management system for a central warehouse serving multiple customers, each with distinct SLA requirements. The key innovation is the **Dynamic Allocation Policy** learned via Deep Controlled Learning, which decides how to ration scarce inventory among customers to minimize total expected cost while respecting per-customer backorder allowance constraints.
+This repository implements a sophisticated inventory management system for a central warehouse serving multiple customers, each with distinct SLA requirements. The key innovation is the **Dynamic Allocation Policy** learned via Deep Controlled Learning, which decides how to allocate scarce inventory among customers to minimize long-run average cost while respecting per-customer backorder allowance constraints.
 
 ### Core Problem
 
@@ -16,7 +16,7 @@ This repository implements a sophisticated inventory management system for a cen
 ### System Components
 
 #### 1. Central Warehouse
-- Stocks **I** items (SKUs) for **C** customers
+- Stocks a set of items **I** (**|I|** SKUs) for a set of customers **C** (**|C|** customers)
 - Maintains per-item base-stock levels (S_i)
 - Replenishment lead time (L) periods
 
@@ -34,16 +34,17 @@ Each customer k has:
 
 | Variable | Meaning | Size |
 |----------|---------|------|
-| **OH_i(t)** | On-hand inventory after allocation (can be negative) | I features |
-| **OH\*_i(t)** | On-hand inventory before allocation (available for rationing) | I features |
-| **Q_i(t-1...t-L)** | Pipeline orders in transit | I×L features |
-| **BO_{k,i}(t)** | Backorder per customer-item | C×I features |
-| **D_{k,i}(t)** | Realized demand (current period) | C×I features |
-| **Σ̄BO_k(t)** | Cumulative backorder within review horizon | C features |
+| **OH_i(t)** | On-hand inventory at the *start* of period t — before receiving Q_i(t-L) and before placing Q_i(t); always nonnegative (unmet demand is tracked via backorders, not negative on-hand) | \|I\| features |
+| **Q_i(t-1...t-L)** | Pipeline orders in transit | \|I\|×L features |
+| **BO_{k,i}(t)** | Backorder per customer-item | \|C\|×\|I\| features |
+| **D_{k,i}(t)** | Realized demand (current period) | \|C\|×\|I\| features |
+| **Σ̄BO_k(t)** | Cumulative backorder within the review horizon, inclusive of period t itself | \|C\| features |
 | **T_rem(t)** | Time remaining in review horizon | 1 feature |
-| **β_k** | SLA backorder allowance per customer | C features |
+| **β_k** | SLA backorder allowance per customer | \|C\| features |
 
-**Total State Dimension:** I + I + I·L + C·I + C·I + C + 1 + C features
+**Total State Dimension:** \|I\| + \|I\|·L + \|C\|·\|I\| + \|C\|·\|I\| + \|C\| + 1 + \|C\| features
+
+Available supply for allocation each period is OH_i(t) + Q_i(t-L) (on-hand plus the order arriving this period) — there is no separately-tracked "before allocation" state variable; this quantity is simply computed inline wherever it's needed.
 
 ### Decision Variables
 
@@ -61,8 +62,9 @@ A_{k,i}(t) for each customer k and item i
 ```
 subject to:
 ```
-Σ_k A_{k,i}(t) ≤ OH_i(t)
+Σ_k A_{k,i}(t) ≤ OH_i(t) + Q_i(t-L)
 ```
+i.e. total allocation of item i cannot exceed on-hand stock plus this period's arriving order.
 
 ### Rationing Actions
 
@@ -79,12 +81,17 @@ Four built-in rationing strategies (extensible):
 ```
 C_hold(t) = Σ_i h_i * OH_i(t+1)
 ```
-Charged on inventory remaining after allocation (OH after, not OH\* before).
+Charged on inventory remaining after allocation, i.e. OH_i(t+1), not on-hand stock before allocation.
 
 ### SLA Penalty (At Horizon End)
 ```
 C_penalty = Σ_k p_k * max(0, Σ̄BO_k(T_k) - β_k)
 ```
+Σ̄BO_k(T_k) is inclusive of the horizon's last period's own backorder, not just the periods before it.
+
+### Objective
+
+The allocation policy π is chosen to minimize long-run average cost per period — taken as the horizon → ∞ limit over all (repeating) review horizons, not the cost of a single horizon.
 
 ## Period Workflow (8 Steps)
 
@@ -246,12 +253,14 @@ This research builds on:
 - **METRIC** (Sherbrooke, 1968): Multi-echelon inventory optimization
 - **Deep Reinforcement Learning** (Boute et al., 2022): Learning-based control policies
 - **DCL Framework** (Temizoz et al., 2025): Deep Controlled Learning for inventory systems
+- **Recurring finite-horizon SLAs** (Temizoz et al., 2026): Static and dynamic base-stock policies under repeating finite-horizon service targets
 
 ## References
 
 1. Sherbrooke, C.C. (1968). "METRIC: A Multi-Echelon Technique for Recoverable Item Control"
 2. Temizoz, T., et al. (2025). "Deep Controlled Learning for Inventory Control"
 3. Boute, R.N., et al. (2022). "Deep Reinforcement Learning for Inventory Control: A Roadmap"
+4. Temizoz, T., et al. (2026). "How to ace your next service level contract review?" (working paper)
 
 ## License
 
