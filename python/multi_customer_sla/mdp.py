@@ -386,3 +386,38 @@ class BaseStockPolicy:
 
     def get_action(self, state: State) -> int:
         return self.action
+
+
+@const_dataclass(slots=True)
+class GreedyDynamicPolicy:
+    """Rule-based dynamic policy: switches rationing rule based on how close
+    each customer's cumulative backorder is to its numeric backorder
+    allowance (beta_c) — cost-based greedy (action 3) once any customer has
+    exceeded it, SLA-gap myopic (action 1) once any customer is within 80% of
+    it, otherwise FCFS (action 0) since there is no SLA pressure yet. Ported
+    from policies.cpp's GreedyDynamicPolicy — the "smart" rule-based
+    benchmark, as opposed to BaseStockPolicy's constant action."""
+    mdp: MultiCustomerSlaMDP
+    # Kept for config parity with the C++ class's constructor field, but
+    # NOTE: it is dead in the branching logic below, exactly as in the
+    # original — every branch of the if/elif/else reassigns the action
+    # regardless of this value, so it never actually affects get_action.
+    service_level_policy: int = 0
+
+    def get_action(self, state: State) -> int:
+        any_near_limit = False
+        any_exceeds_limit = False
+        for c in range(self.mdp.number_of_customers):
+            allowance = float(self.mdp.backorder_allowances[c])
+            exceed_amount = state.cumulative_backorder[c] - allowance
+            if exceed_amount > 0.0:
+                any_exceeds_limit = True
+            elif state.cumulative_backorder[c] > 0.8 * allowance:
+                any_near_limit = True
+
+        if any_exceeds_limit:
+            return 3
+        elif any_near_limit:
+            return 1
+        else:
+            return 0
