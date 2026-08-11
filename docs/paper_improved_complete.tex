@@ -171,7 +171,10 @@ Each customer $c$'s service level is expressed as a numeric backorder allowance 
 
 \subsection{Demand}
 
-Demand for item $i$ from customer $c$ follows a known stochastic demand distribution (e.g., Poisson), independent across periods. Let $D_{c,i}(t) \in \mathbb{Z}_{\geq 0}$ denote the \emph{realized} demand of customer $c$ for item $i$ in period $t$ — a draw from that distribution, observed after the fact. Total demand for item $i$ in period $t$ is $D_i(t) = \sum_{c \in C} D_{c,i}(t)$, and total demand from customer $c$ is $D_c(t) = \sum_{i \in I} D_{c,i}(t)$.
+Demand for item $i$ from customer $c$ follows a known stochastic demand distribution (e.g., Poisson), independent across periods. Let $D_{c,i}(t) \in \mathbb{Z}_{\geq 0}$ denote the \emph{realized} demand of customer $c$ for item $i$ in period $t$ — a draw from that distribution, observed after the fact. Total demand is obtained by summing over customers (per item) or over items (per customer):
+\begin{equation}
+    D_i(t) = \sum_{c \in C} D_{c,i}(t), \qquad D_c(t) = \sum_{i \in I} D_{c,i}(t).
+\end{equation}
 
 \subsection{State Variables}
 
@@ -181,7 +184,7 @@ At period $t$, the state $s_t$ includes:
 \begin{equation}
     \text{OH}_i(t) \in \mathbb{Z}_{\geq 0}, \quad i \in I
 \end{equation}
-On-hand inventory of item $i$ at the \emph{start} of period $t$: before receiving the order $Q_i(t-L)$ placed $L$ periods ago, and before this period's order $Q_i(t)$ is placed.
+On-hand inventory of item $i$ at the \emph{start} of period $t$: before receiving the order $Q_i(t-L)$ placed $L$ periods ago, and before this period's order $Q_i(t)$ is placed. Once $Q_i(t-L)$ is received in Step 1 of the period workflow below, this becomes the before-allocation quantity $\text{OH}'_i(t)$, defined next.
 
 \subsubsection{Pipeline Orders ($|I| \cdot L$ features)}
 Orders placed in the past $L$ periods, currently in transit:
@@ -225,13 +228,21 @@ Maximum cumulative backorder units tolerated for customer $c$ per review horizon
     |\mathcal{S}| = |I| + |I| \cdot L + |C|\cdot|I| + |C|\cdot|I| + |C| + 1 + |C|
 \end{equation}
 
+\subsection{On-Hand Inventory Before Allocation}
+
+Once this period's arriving order has been received, on-hand inventory before allocation is
+\begin{equation}
+    \text{OH}'_i(t) = \text{OH}_i(t) + Q_i(t-L), \quad i \in I.
+\end{equation}
+This is the available supply for item $i$ this period — after the order $Q_i(t-L)$ has arrived but before this period's allocation is made. It is not an independent piece of state: it is fully determined by $\text{OH}_i(t)$ and the pipeline order $Q_i(t-L)$, both already part of the state. It is given its own symbol because it recurs throughout the rest of the model — in the inventory position below, in the allocation feasibility bound, and in Step 1 of the period workflow — and writing $\text{OH}_i(t) + Q_i(t-L)$ out in full each time would obscure that it is the same quantity every time.
+
 \subsection{Inventory Position}
 
 Ordering follows a base-stock policy, and a base-stock policy needs to know not just on-hand stock, but everything already committed to arrive and everything already owed to customers. This combined quantity is the inventory position — it would not be needed at all under a different ordering policy, but it is needed here specifically because ordering is base-stock:
 \begin{equation}
-    \text{IP}_i(t) = \text{OH}_i(t) + \sum_{j=t-L}^{t-1} Q_i(j) - \sum_{c \in C} \text{BO}_{c,i}(t)
+    \text{IP}_i(t) = \text{OH}'_i(t) + \sum_{j=t-L+1}^{t-1} Q_i(j) - \sum_{c \in C} \text{BO}_{c,i}(t)
 \end{equation}
-i.e., on-hand inventory, plus all $L$ orders currently in the pipeline (from the one arriving today, $Q_i(t-L)$, through the one placed yesterday, $Q_i(t-1)$), minus outstanding backorders across all customers.
+i.e., on-hand inventory including this period's arriving order ($\text{OH}'_i(t)$), plus the remaining $L-1$ orders still in the pipeline (from the one placed two periods ago through the one placed yesterday, $Q_i(t-L+1), \ldots, Q_i(t-1)$), minus outstanding backorders across all customers. This is the same quantity as $\text{OH}_i(t) + \sum_{j=t-L}^{t-1} Q_i(j) - \sum_{c \in C} \text{BO}_{c,i}(t)$ — written via $\text{OH}'_i(t)$ because that quantity already has to be computed anyway (see above), not because a different set of orders is being counted.
 
 \subsection{Decisions Each Period}
 
@@ -244,9 +255,9 @@ where $S_i$ is the fixed base-stock level for item $i$. This order is placed in 
 \subsubsection{Allocation Decision (dynamic)}
 After demand is realized, an allocation policy $\pi(s_t)$ chooses, for each customer $c$ and item $i$:
 \begin{equation}
-    A_{c,i}(t) = \pi_{c,i}(s_t), \qquad \text{subject to} \qquad \sum_{c \in C} A_{c,i}(t) \leq \text{OH}_i(t) + Q_i(t-L),
+    A_{c,i}(t) = \pi_{c,i}(s_t), \qquad \text{subject to} \qquad \sum_{c \in C} A_{c,i}(t) \leq \text{OH}'_i(t),
 \end{equation}
-i.e., total allocation of item $i$ cannot exceed what is available once this period's order has arrived. The policy can use any information in $s_t$, and may allocate less than what is available (a strategic hold) even when demand could be fully covered.
+i.e., total allocation of item $i$ cannot exceed the available supply $\text{OH}'_i(t)$ once this period's order has arrived. The policy can use any information in $s_t$, and may allocate less than what is available (a strategic hold) even when demand could be fully covered.
 
 \newpage
 \section{Period Workflow}
@@ -254,18 +265,18 @@ i.e., total allocation of item $i$ cannot exceed what is available once this per
 Each period $t$ executes the following steps in order.
 
 \subsection{Step 1: Receive Orders}
-The order $Q_i(t-L)$ placed $L$ periods ago arrives, becoming available alongside existing on-hand stock. Available supply for item $i$ this period is $\text{OH}_i(t) + Q_i(t-L)$.
+The order $Q_i(t-L)$ placed $L$ periods ago arrives, becoming available alongside existing on-hand stock: $\text{OH}'_i(t) = \text{OH}_i(t) + Q_i(t-L)$, as defined above.
 
 \subsection{Step 2: Compute Inventory Position and Place New Order}
 $\text{IP}_i(t)$ is computed as defined above, and the new order $Q_i(t) = \max(0, S_i - \text{IP}_i(t))$ is placed (it will arrive in period $t+L$).
 
 \subsection{Step 3: Observe Demand}
-Demands $D_{c,i}(t)$ are realized for each customer-item pair; total item demand is $D_i(t) = \sum_{c \in C} D_{c,i}(t)$.
+Demands $D_{c,i}(t)$ are realized for each customer-item pair; total item demand $D_i(t)$ is as defined above.
 
 \subsection{Step 4: Allocate Using Policy}
 For each item $i$, the allocation policy $\pi(s_t)$ chooses $A_{c,i}(t)$ for each customer $c$, subject to
 \begin{equation}
-    \sum_{c \in C} A_{c,i}(t) \leq \text{OH}_i(t) + Q_i(t-L).
+    \sum_{c \in C} A_{c,i}(t) \leq \text{OH}'_i(t).
 \end{equation}
 The policy weighs backlog and new demand together — what is owed to customer $c$ for item $i$ is $\text{BO}_{c,i}(t) + D_{c,i}(t)$ — and decides how to split available stock across customers. If available supply covers everyone's backlog and new demand combined, the policy typically allocates in full, but it is not required to: the only hard constraint is the availability bound above.
 
@@ -273,7 +284,7 @@ The policy weighs backlog and new demand together — what is owed to customer $
 
 \textbf{On-hand inventory:}
 \begin{equation}
-    \text{OH}_i(t+1) = \text{OH}_i(t) + Q_i(t-L) - \sum_{c \in C} A_{c,i}(t)
+    \text{OH}_i(t+1) = \text{OH}'_i(t) - \sum_{c \in C} A_{c,i}(t)
 \end{equation}
 This is on-hand inventory at the start of period $t+1$ — before receiving $Q_i(t+1-L)$ and before placing $Q_i(t+1)$ — consistent with the definition of $\text{OH}_i(t)$ above. Since allocation is always bounded by available supply, on-hand inventory never goes negative; unmet demand is tracked separately as backorder.
 
@@ -318,11 +329,11 @@ charged on inventory remaining \emph{after} this period's allocation, i.e., what
 \textbf{SLA penalty (at horizon end only):}
 \begin{equation}
     C_{\text{penalty}}(t) = \begin{cases}
-        \sum_{c \in C} p_c \cdot \max(0, \overline{\text{BO}}_c(t) - \beta_c) & \text{if } T_{\text{rem}}(t) = 0 \text{ (end of horizon)} \\
+        \sum_{c \in C} p_c \cdot \max\!\Big(0,\; \underbrace{\overline{\text{BO}}_c(t-1)}_{\text{prior periods this horizon}} + \underbrace{\text{BO}_c(t)}_{\text{this period's own backorder}} - \; \beta_c\Big) & \text{if } T_{\text{rem}}(t) = 0 \text{ (end of horizon)} \\
         0 & \text{otherwise}
     \end{cases}
 \end{equation}
-Because $\overline{\text{BO}}_c(t)$ (Step 5) includes period $t$'s own backorder, the penalty correctly reflects the backorder incurred in the horizon's last period, not just the periods before it.
+$\overline{\text{BO}}_c(t-1)$ sums backorder over the horizon's periods up to but not including $t$; adding $\text{BO}_c(t)$ explicitly folds in the backorder just realized this period, matching the recursive definition $\overline{\text{BO}}_c(t) = \overline{\text{BO}}_c(t-1) + \text{BO}_c(t)$ from Step 5. Without this term the penalty would miss the backorder incurred in the horizon's very last period.
 
 \textbf{Total period cost:}
 \begin{equation}
