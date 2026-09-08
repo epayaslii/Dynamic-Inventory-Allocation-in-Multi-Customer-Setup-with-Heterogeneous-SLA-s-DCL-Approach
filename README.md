@@ -147,6 +147,10 @@ The system uses DCL to learn an optimal allocation policy by:
 ├── gc-lsn-weights/
 │   ├── GC-LSN.json                  # Network architecture
 │   └── GC-LSN.pth                   # Pre-trained weights
+├── python/multi_customer_sla/        # Python port for the official dynaplex package (see below)
+│   ├── mdp.py                        # MDP, State, FCFSPolicy, SlaGapPolicy, featurizer
+│   ├── train_and_compare.py          # DCL training + PolicyComparer example
+│   └── validate.py                   # Plain-CPython invariant checks
 └── README.md (this file)
 ```
 
@@ -246,6 +250,38 @@ See `src/executables/multi_customer_sla/multi_customer_sla_simple.cpp` for a com
 - Detailed cost breakdown per rationing action
 - SLA compliance rates
 - Identifies cost-benefit of each strategy
+
+## Python Port (Official DynaPlex / DynaML)
+
+`python/multi_customer_sla/` is a from-scratch port of the model onto the
+**official** `dynaplex` package (dynaplex.github.io/DynaPlex, `pip install
+dynaplex`) rather than [Tarkan Temizoz's C++ fork](https://github.com/tarkantemizoz/DynaPlex)
+the rest of this repo targets. The official package ships as a precompiled
+wheel with models authored in **DynaML**, a compiled Python subset — a
+different toolchain from the C++ source model above, not an alternate build
+of it.
+
+It implements `docs/paper_improved_complete.tex` directly: the action *is*
+the allocation decision A_{c,i}(t) itself (built from a sequence of scalar
+"who gets the next unit" decisions, since DynaML actions are always a single
+int — see the module docstring in `mdp.py`), not a choice among a fixed
+menu of rationing heuristics.
+
+```bash
+pip install dynaplex   # Python 3.11-3.14; see dynaplex.github.io for platforms
+cd python/multi_customer_sla
+python validate.py           # plain-CPython invariant checks
+python train_and_compare.py  # DCL training + PolicyComparer (requires torch)
+```
+
+Scope: `mdp.py` implements the full MDP, `FCFSPolicy` and `SlaGapPolicy`
+(unit-by-unit translations of first-come-first-served and SLA-gap rationing,
+used as DCL's generation-0 rollout policy and as comparison baselines), and
+a featurizer exposing the paper's declared state variables. Verified against
+the real package: `assert_mdp` / `assert_policy_for_mdp` /
+`assert_featurizer_for_mdp`, a plain-CPython simulation checking the paper's
+invariants (`validate.py`), DynaML compilation under the JIT `engine`
+backend, and an end-to-end `DCL` training + `PolicyComparer` run.
 
 ## Related Work
 

@@ -72,3 +72,4 @@ Testing/
 __pycache__/
 *.pyc
 .venv/
+dynaplex_runs/
