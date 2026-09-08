@@ -1,6 +1,9 @@
 """
-Train a DCL agent on MultiCustomerSlaMDP and compare it against the FCFS and
-SLA-gap rationing heuristics on common random numbers.
+Train a DCL agent on MultiCustomerSlaMDP -- using network.BlockMLP, a custom
+per-feature-block PyTorch network (see network.py's module docstring for why
+this exists rather than just dp.MLP) -- and compare it against the FCFS,
+SLA-gap, cost-greedy, and greedy-dynamic rationing heuristics on common
+random numbers.
 
 Run directly from this directory (`python train_and_compare.py`). Artifacts
 (samples, trained agents) land in dynaplex_runs/; rerunning resumes rather
@@ -8,12 +11,8 @@ than recomputes.
 """
 import dynaplex as dp
 
-from mdp import (
-    FCFSPolicy,
-    MultiCustomerSlaFeaturizer,
-    MultiCustomerSlaMDP,
-    SlaGapPolicy,
-)
+from mdp import MultiCustomerSlaFeaturizer, MultiCustomerSlaMDP
+from policies import CostGreedyPolicy, FCFSPolicy, GreedyDynamicPolicy, SlaGapPolicy
 
 
 def main() -> None:
@@ -40,22 +39,41 @@ def main() -> None:
 
     fcfs = FCFSPolicy(mdp=mdp)
     sla_gap = SlaGapPolicy(mdp=mdp)
+    cost_greedy = CostGreedyPolicy(mdp=mdp)
+    greedy_dynamic = GreedyDynamicPolicy(mdp=mdp)
 
     # No-ops at runtime; they make pyright statically verify that the MDP,
     # policies, and featurizer satisfy the interfaces DynaPlex expects.
     dp.modelling.assert_mdp(mdp)
     dp.modelling.assert_policy_for_mdp(mdp, fcfs)
     dp.modelling.assert_policy_for_mdp(mdp, sla_gap)
+    dp.modelling.assert_policy_for_mdp(mdp, cost_greedy)
+    dp.modelling.assert_policy_for_mdp(mdp, greedy_dynamic)
     dp.modelling.assert_featurizer_for_mdp(MultiCustomerSlaFeaturizer, mdp)
 
+    # network.block_mlp_factory encodes each feature block (inventory,
+    # backorder, demand, cumulative backorder, time remaining, SLA
+    # allowances, alloc-item pointer) separately before a shared trunk --
+    # see network.py. dp.MLP(hidden=[128, 128]) is a drop-in alternative
+    # (also tested against this model, works fine) if you'd rather not use
+    # the block-structured network.
+    custom_network = dp.Net(
+        "network.block_mlp_factory",
+        number_of_customers=mdp.number_of_customers,
+        number_of_items=mdp.number_of_items,
+        lead_time=mdp.lead_time,
+        block_hidden=64,
+        trunk_hidden=[128, 128],
+    )
+
     d = dp.DCL(
-        mdp, fcfs,                          # generation-0 rollout policy
+        mdp, greedy_dynamic,                # generation-0 rollout policy
         features=MultiCustomerSlaFeaturizer,
         n=8000,                             # labeled samples per generation
         m=200,                              # rollouts per candidate action
         h=100,                              # rollout horizon (periods)
         workers=8, slots=256,
-        network=dp.MLP(hidden=[128, 128]),
+        network=custom_network,
         train=dict(loss="ce", epochs=50, batch_size=64, lr=1e-3,
                    patience=10, val_fraction=0.1),
     )
@@ -72,6 +90,8 @@ def main() -> None:
     to_compare = {
         "FCFS": fcfs,
         "SlaGap": sla_gap,
+        "CostGreedy": cost_greedy,
+        "GreedyDynamic": greedy_dynamic,
     }
     for agent in agents:
         to_compare[f"DCL_gen{agent.info['generation']}"] = agent

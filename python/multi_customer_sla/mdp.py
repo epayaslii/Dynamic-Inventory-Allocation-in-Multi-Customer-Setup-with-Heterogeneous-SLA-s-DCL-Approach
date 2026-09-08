@@ -391,41 +391,6 @@ class MultiCustomerSlaMDP:
         context.time_elapsed += 1
 
 
-@const_dataclass(slots=True)
-class FCFSPolicy:
-    """At each unit-decision, serves the lowest-index customer still owed a
-    unit of the item under rationing -- never HOLDs. The natural
-    unit-by-unit translation of first-come-first-served rationing."""
-    mdp: MultiCustomerSlaMDP
-
-    def get_action(self, state: State) -> int:
-        for c in range(self.mdp.number_of_customers):
-            if state.alloc_owed[c] > 0:
-                return c
-        return self.mdp.number_of_customers  # unreachable: AWAIT_ACTION implies some owed[c] > 0
-
-
-@const_dataclass(slots=True)
-class SlaGapPolicy:
-    """At each unit-decision, serves whichever eligible customer is furthest
-    past their SLA backorder allowance (largest cumulative_backorder[c] -
-    beta_c) -- a myopic, SLA-aware rationing heuristic; never HOLDs."""
-    mdp: MultiCustomerSlaMDP
-
-    def get_action(self, state: State) -> int:
-        best_c = -1
-        best_gap = 0.0
-        for c in range(self.mdp.number_of_customers):
-            if state.alloc_owed[c] > 0:
-                gap = state.cumulative_backorder[c] - float(self.mdp.backorder_allowances[c])
-                if best_c == -1 or gap > best_gap:
-                    best_c = c
-                    best_gap = gap
-        if best_c == -1:
-            return self.mdp.number_of_customers  # unreachable, see FCFSPolicy
-        return best_c
-
-
 @featurizer
 @dataclass(slots=True)
 class MultiCustomerSlaFeaturizer(Featurizer):

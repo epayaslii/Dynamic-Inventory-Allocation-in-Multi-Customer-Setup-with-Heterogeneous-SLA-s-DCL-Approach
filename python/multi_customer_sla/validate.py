@@ -13,7 +13,8 @@ tolerates).
 """
 from dynaplex.modelling import StateCategory, const_dataclass, new_context
 
-from mdp import FCFSPolicy, MultiCustomerSlaMDP, SlaGapPolicy
+from mdp import MultiCustomerSlaMDP
+from policies import CostGreedyPolicy, FCFSPolicy, GreedyDynamicPolicy, SlaGapPolicy
 
 
 def run(mdp: MultiCustomerSlaMDP, policy, periods: int, seed: int):
@@ -96,7 +97,13 @@ def main() -> None:
         high_demand_variance=[0, 1, 0, 0, 1, 0],
     )
 
-    for name, policy in [("FCFS", FCFSPolicy(mdp=mdp)), ("SlaGap", SlaGapPolicy(mdp=mdp))]:
+    policies = [
+        ("FCFS", FCFSPolicy(mdp=mdp)),
+        ("SlaGap", SlaGapPolicy(mdp=mdp)),
+        ("CostGreedy", CostGreedyPolicy(mdp=mdp)),
+        ("GreedyDynamic", GreedyDynamicPolicy(mdp=mdp)),
+    ]
+    for name, policy in policies:
         cost, calls, max_actions = run(mdp, policy, periods=500, seed=1234)
         print(f"{name}: cumulative_cost={cost:.2f} action_calls={calls} max_actions/period={max_actions}")
 

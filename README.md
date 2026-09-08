@@ -148,7 +148,9 @@ The system uses DCL to learn an optimal allocation policy by:
 │   ├── GC-LSN.json                  # Network architecture
 │   └── GC-LSN.pth                   # Pre-trained weights
 ├── python/multi_customer_sla/        # Python port for the official dynaplex package (see below)
-│   ├── mdp.py                        # MDP, State, FCFSPolicy, SlaGapPolicy, featurizer
+│   ├── mdp.py                        # MDP, State, featurizer
+│   ├── policies.py                   # FCFSPolicy, SlaGapPolicy, CostGreedyPolicy, GreedyDynamicPolicy
+│   ├── network.py                    # BlockMLP: custom PyTorch policy network
 │   ├── train_and_compare.py          # DCL training + PolicyComparer example
 │   └── validate.py                   # Plain-CPython invariant checks
 └── README.md (this file)
@@ -274,14 +276,31 @@ python validate.py           # plain-CPython invariant checks
 python train_and_compare.py  # DCL training + PolicyComparer (requires torch)
 ```
 
-Scope: `mdp.py` implements the full MDP, `FCFSPolicy` and `SlaGapPolicy`
-(unit-by-unit translations of first-come-first-served and SLA-gap rationing,
-used as DCL's generation-0 rollout policy and as comparison baselines), and
-a featurizer exposing the paper's declared state variables. Verified against
-the real package: `assert_mdp` / `assert_policy_for_mdp` /
-`assert_featurizer_for_mdp`, a plain-CPython simulation checking the paper's
-invariants (`validate.py`), DynaML compilation under the JIT `engine`
-backend, and an end-to-end `DCL` training + `PolicyComparer` run.
+Scope: `mdp.py` implements the full MDP, its state, and a featurizer
+exposing the paper's declared state variables. `policies.py` has four
+rule-based policies, unit-by-unit translations of `policies.cpp`'s rules
+(`FCFSPolicy`, `SlaGapPolicy`, `CostGreedyPolicy`) plus the SLA-pressure
+switching logic of `GreedyDynamicPolicy` — used as DCL's generation-0
+rollout policy and as comparison baselines. `network.py` has `BlockMLP`, a
+custom PyTorch network (real autograd, unlike `allocation_network.cpp`'s
+`Backward()`, an explicit unfinished stub) that encodes the featurizer's
+seven feature blocks separately before a shared trunk, wired into `DCL` via
+`dynaplex.nn.Net`'s importable-factory contract; `dp.MLP` also works against
+this model (tested) if a plain flat-vector MLP is preferred instead. Not
+ported: `src/algorithms/dcl/*` — those files are generic, model-agnostic
+DynaPlex-framework code (a Sequential Halving bandit algorithm), not project
+-specific logic, and the official `dynaplex` package already ships the same
+algorithm as `dp.DCL`, which this port uses directly rather than
+re-implementing.
+
+Verified against the real package: `assert_mdp` / `assert_policy_for_mdp` /
+`assert_featurizer_for_mdp` for the MDP and all four policies, a
+plain-CPython simulation checking the paper's invariants across all four
+policies (`validate.py`), DynaML compilation of the MDP and every policy
+(including `GreedyDynamicPolicy`'s composition of the other three) under the
+JIT `engine` backend, a real PyTorch backward pass through `BlockMLP`
+confirming every parameter receives a gradient, and end-to-end `DCL`
+training + `PolicyComparer` runs with both `BlockMLP` and `dp.MLP`.
 
 ## Related Work
 
