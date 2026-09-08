@@ -260,7 +260,7 @@ This research builds on:
 1. Sherbrooke, C.C. (1968). "METRIC: A Multi-Echelon Technique for Recoverable Item Control"
 2. Temizoz, T., et al. (2025). "Deep Controlled Learning for Inventory Control"
 3. Boute, R.N., et al. (2022). "Deep Reinforcement Learning for Inventory Control: A Roadmap"
-4. Temizoz, T., et al. (2026). "How to ace your next service level contract review?" (working paper)
+4. Temizoz, T., et al. (2026). "How to ace your next service level contract review?" 
 
 ## License
 
