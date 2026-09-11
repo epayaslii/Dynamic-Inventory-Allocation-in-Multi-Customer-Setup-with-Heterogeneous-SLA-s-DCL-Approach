@@ -41,15 +41,20 @@ always weakly better than any partial hold, for every possible continuation.
 The action space (and the HOLD action) is therefore only exercised under
 genuine scarcity, where such reservation-for-later tradeoffs are real.
 
-Single, shared review horizon
+Per-customer review horizons
 -------------------------------
-The paper's Sec. 3.1 defines T and r(t) = ceil(t/T) as SINGLE, shared
-quantities -- not one per customer -- and "Time Remaining" is listed as
-exactly 1 state feature (not |C|). All customers' cumulative backorders
-therefore reset, and all SLA penalties are assessed, at the SAME period
-boundaries. (This differs from this repo's C++/README model, which allows
-per-customer review horizons T_k; here the paper is implemented literally,
-per the paper the user supplied.)
+The paper's Sec. 3.1 formalizes T and r(t) = ceil(t/T) as a SINGLE, shared
+quantity, with "Time Remaining" listed as exactly 1 state feature -- but the
+paper's own subject is heterogeneous, customer-specific SLAs (beta_c, p_c
+already vary by customer), and this repo's C++/README model already allows
+each customer its own review horizon T_k (README: `reviewHorizons`). This
+port follows the more general C++/README convention: review_horizon is a
+list of length |C| (one T_k per customer), time_remaining is |C| independent
+counters, and each customer's cumulative backorder is reset and its SLA
+penalty assessed on ITS OWN period boundary, not tied to any other
+customer's. The paper's literal single-T model is the special case
+T_1 = ... = T_|C|; nothing here prevents recovering it by passing equal
+values.
 
 Single, shared lead time
 --------------------------
@@ -73,6 +78,7 @@ item, not |I|*(L+1) -- since OH_i(t) and Q_i(t-L) are never used separately
 anywhere in the model, only their sum.
 """
 from dataclasses import dataclass
+from typing import Final
 
 from dynaplex.modelling import (
     AliasSampler,
@@ -107,10 +113,11 @@ class State:
     current_demand / current_allocation[c*|I|+i]: this period's D_{c,i}(t)
       (fixed once sampled) / A_{c,i}(t) (grows as unit-decisions are made),
       flattened the same way.
-    cumulative_backorder[c]: BObar_c(t), reset for every customer together
-      at each shared review-horizon boundary.
-    time_remaining: T_rem(t) -- ONE shared counter (paper Sec. 3.1: a single
-      T and r(t), not one per customer).
+    cumulative_backorder[c]: BObar_c(t), reset for customer c at ITS OWN
+      review-horizon boundary (see module docstring: review horizons are
+      per-customer, T_k).
+    time_remaining[c]: T_rem for customer c -- one independent counter per
+      customer, each cycling through its own review_horizon[c].
     alloc_item / alloc_owed / alloc_on_hand / alloc_available: scratch state
       for the item currently being rationed unit by unit (meaningful only
       while category == AWAIT_ACTION). alloc_owed[c] = BO_{c,i}+D_{c,i}
@@ -124,7 +131,7 @@ class State:
     current_demand: list[int]
     current_allocation: list[int]
     cumulative_backorder: list[float]
-    time_remaining: int
+    time_remaining: list[int]
     alloc_item: int
     alloc_owed: list[int]
     alloc_on_hand: int
@@ -145,7 +152,7 @@ class MultiCustomerSlaMDP:
     number_of_customers: int
     number_of_items: int
     lead_time: int
-    review_horizon: int
+    review_horizon: list[int]
     holding_costs: list[float]
     backorder_allowances: list[int]
     penalty_costs: list[float]
@@ -160,7 +167,7 @@ class MultiCustomerSlaMDP:
         number_of_customers: int,
         number_of_items: int,
         lead_time: int,
-        review_horizon: int,
+        review_horizon: list[int],
         holding_costs: list[float],
         backorder_allowances: list[int],
         penalty_costs: list[float],
@@ -171,7 +178,8 @@ class MultiCustomerSlaMDP:
         # NOTE: __init__ is never called by the DynaML compiler; full CPython is allowed here.
         assert number_of_customers >= 1 and number_of_items >= 1
         assert lead_time >= 1, "this port assumes lead_time >= 1 (L == 0 is not yet supported)"
-        assert review_horizon >= 1
+        assert len(review_horizon) == number_of_customers, "one review horizon T_k per customer"
+        assert all(t >= 1 for t in review_horizon)
         assert len(holding_costs) == number_of_items
         assert len(base_stock_level) == number_of_items
         assert len(backorder_allowances) == number_of_customers
@@ -188,7 +196,7 @@ class MultiCustomerSlaMDP:
         self.number_of_customers = number_of_customers
         self.number_of_items = number_of_items
         self.lead_time = lead_time
-        self.review_horizon = review_horizon
+        self.review_horizon = list(review_horizon)
         self.holding_costs = list(holding_costs)
         self.backorder_allowances = list(backorder_allowances)
         self.penalty_costs = list(penalty_costs)
@@ -228,7 +236,7 @@ class MultiCustomerSlaMDP:
             current_demand=[0] * n_pairs,
             current_allocation=[0] * n_pairs,
             cumulative_backorder=[0.0] * self.number_of_customers,
-            time_remaining=self.review_horizon,
+            time_remaining=list(self.review_horizon),
             alloc_item=0,
             alloc_owed=[0] * self.number_of_customers,
             alloc_on_hand=0,
@@ -375,17 +383,17 @@ class MultiCustomerSlaMDP:
                 bo_c += state.backorder[c * self.number_of_items + i]
             state.cumulative_backorder[c] += float(bo_c)
 
-        # Single, shared review horizon (see module docstring): every
-        # customer's SLA is assessed, and every cumulative sum reset,
-        # together.
-        state.time_remaining -= 1
-        if state.time_remaining == 0:
-            for c in range(self.number_of_customers):
+        # Per-customer review horizons (see module docstring): each
+        # customer's SLA is assessed, and its cumulative sum reset, on ITS
+        # OWN boundary -- independent of every other customer's.
+        for c in range(self.number_of_customers):
+            state.time_remaining[c] -= 1
+            if state.time_remaining[c] == 0:
                 exceeded = state.cumulative_backorder[c] - float(self.backorder_allowances[c])
                 if exceeded > 0.0:
                     context.cumulative_cost += exceeded * self.penalty_costs[c]
                 state.cumulative_backorder[c] = 0.0
-            state.time_remaining = self.review_horizon
+                state.time_remaining[c] = self.review_horizon[c]
 
         state.category = StateCategory.AWAIT_EVENT
         context.time_elapsed += 1
@@ -401,7 +409,7 @@ class MultiCustomerSlaFeaturizer(Featurizer):
       - backorder[c,i]                     (|C| * |I|)
       - current_demand[c,i]                (|C| * |I|)
       - cumulative_backorder[c]            (|C|)
-      - time_remaining                     (1)
+      - time_remaining[c]                  (|C|)
       - backorder_allowances[c] (beta_c)   (|C|, constant, from mdp config)
       - one-hot: which item is under rationing right now (alloc_item)
                                             (|I|)
@@ -409,10 +417,13 @@ class MultiCustomerSlaFeaturizer(Featurizer):
     does not itself decompose the allocation decision into unit-by-unit
     sub-steps (that is purely this DynaML encoding's doing, see module
     docstring), so nothing else here identifies which item a given
-    unit-decision is about. Everything else mirrors paper Sec. 3.3 exactly.
+    unit-decision is about. Similarly, time_remaining is |C| numbers (one per
+    customer) rather than the paper's literal 1, since this port generalizes
+    to per-customer review horizons T_k (see module docstring). Everything
+    else mirrors paper Sec. 3.3 exactly.
     """
-    mdp: MultiCustomerSlaMDP
-    v: GlobalStateWriter
+    mdp: Final[MultiCustomerSlaMDP]
+    v: Final[GlobalStateWriter]
 
     def write_features(self, state: State) -> None:
         for i in range(self.mdp.number_of_items):
@@ -426,7 +437,7 @@ class MultiCustomerSlaFeaturizer(Featurizer):
         self.v.extend(state.backorder)
         self.v.extend(state.current_demand)
         self.v.extend(state.cumulative_backorder)
-        self.v.append(float(state.time_remaining))
+        self.v.extend(state.time_remaining)
         for c in range(self.mdp.number_of_customers):
             self.v.append(float(self.mdp.backorder_allowances[c]))
         for i in range(self.mdp.number_of_items):
@@ -440,7 +451,7 @@ class MultiCustomerSlaFeaturizer(Featurizer):
             + n_c * n_i  # backorder
             + n_c * n_i  # current_demand
             + n_c        # cumulative_backorder
-            + 1          # time_remaining
+            + n_c        # time_remaining
             + n_c        # backorder_allowances
             + n_i        # alloc_item one-hot
         )

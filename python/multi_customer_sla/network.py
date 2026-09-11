@@ -118,7 +118,7 @@ def block_mlp_factory(
         n_c * n_i,  # backorder[c, i]
         n_c * n_i,  # current_demand[c, i]
         n_c,        # cumulative_backorder[c]
-        1,          # time_remaining
+        n_c,        # time_remaining[c]
         n_c,        # backorder_allowances[c]
         n_i,        # alloc_item one-hot
     ]

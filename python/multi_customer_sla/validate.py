@@ -41,7 +41,8 @@ def run(mdp: MultiCustomerSlaMDP, policy, periods: int, seed: int):
                         assert state.pipelines[i][j] >= 0, "negative pipeline/on-hand slot"
                 for v in state.cumulative_backorder:
                     assert v >= 0.0
-                assert 1 <= state.time_remaining <= mdp.review_horizon
+                for c in range(mdp.number_of_customers):
+                    assert 1 <= state.time_remaining[c] <= mdp.review_horizon[c]
                 assert context.cumulative_cost >= 0.0
         elif state.category == StateCategory.AWAIT_ACTION:
             assert state.alloc_available > 0, "entered AWAIT_ACTION with nothing to decide"
@@ -87,7 +88,9 @@ def main() -> None:
         number_of_customers=3,
         number_of_items=2,
         lead_time=2,
-        review_horizon=10,
+        # unequal T_k on purpose -- exercises independent per-customer
+        # review-horizon boundaries, not just the paper's equal-T special case.
+        review_horizon=[10, 15, 8],
         holding_costs=[1.0, 0.8],
         backorder_allowances=[3, 6, 8],
         penalty_costs=[50.0, 60.0, 40.0],

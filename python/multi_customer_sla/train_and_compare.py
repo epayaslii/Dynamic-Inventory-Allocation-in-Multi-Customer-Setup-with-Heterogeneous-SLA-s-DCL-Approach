@@ -18,13 +18,13 @@ from policies import CostGreedyPolicy, FCFSPolicy, GreedyDynamicPolicy, SlaGapPo
 def main() -> None:
     # 2 customers, 3 items -- same illustrative instance as the project
     # README's C++ configuration example, translated to this MDP's fields
-    # (a single shared lead_time/review_horizon per paper Sec. 3.1, rather
-    # than per-item/per-customer).
+    # (a single shared lead_time per paper Sec. 3.1; review_horizon is
+    # per-customer T_k, matching the README's `reviewHorizons`).
     mdp = MultiCustomerSlaMDP(
         number_of_customers=2,
         number_of_items=3,
         lead_time=2,
-        review_horizon=20,
+        review_horizon=[20, 20],
         holding_costs=[1.0, 0.8, 1.2],
         backorder_allowances=[6, 8],
         penalty_costs=[50.0, 60.0],
