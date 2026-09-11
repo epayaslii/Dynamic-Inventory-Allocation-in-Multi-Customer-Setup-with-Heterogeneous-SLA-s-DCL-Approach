@@ -23,12 +23,11 @@ This repository implements a sophisticated inventory management system for a cen
 #### 2. Per-Customer SLA Metrics
 Each customer k has:
 - **Backorder Allowance (β_k):** Maximum cumulative backorder units tolerated per review horizon
-- **Review Horizon (T_k):** Period length over which SLA compliance is measured
+- **Review Horizon (T_k):** Period length over which SLA compliance is measured, independent per customer
 - **Penalty Cost (p_k):** Linear cost per unit of excess backorders
 
 #### 3. Demand Model
-- Per-customer, per-item demand: D_{k,i}(t) ~ distribution
-- Optional time-varying (seasonal) demand: λ(t) = λ_base * (1 + A * sin(2π*t / P))
+- Per-customer, per-item demand: D_{k,i}(t) ~ Poisson or Geometric, selected per (customer, item) via a high-variance flag
 
 ### Key State Variables
 
@@ -39,10 +38,10 @@ Each customer k has:
 | **BO_{k,i}(t)** | Backorder per customer-item | \|C\|×\|I\| features |
 | **D_{k,i}(t)** | Realized demand (current period) | \|C\|×\|I\| features |
 | **Σ̄BO_k(t)** | Cumulative backorder within the review horizon, inclusive of period t itself | \|C\| features |
-| **T_rem(t)** | Time remaining in review horizon | 1 feature |
+| **T_rem_k(t)** | Time remaining in customer k's review horizon | \|C\| features |
 | **β_k** | SLA backorder allowance per customer | \|C\| features |
 
-**Total State Dimension:** \|I\| + \|I\|·L + \|C\|·\|I\| + \|C\|·\|I\| + \|C\| + 1 + \|C\| features
+**Total State Dimension:** \|I\| + \|I\|·L + \|C\|·\|I\| + \|C\|·\|I\| + \|C\| + \|C\| + \|C\| features
 
 Available supply for allocation each period is OH_i(t) + Q_i(t-L) (on-hand plus the order arriving this period) — there is no separately-tracked "before allocation" state variable; this quantity is simply computed inline wherever it's needed.
 
@@ -64,16 +63,18 @@ subject to:
 ```
 Σ_k A_{k,i}(t) ≤ OH_i(t) + Q_i(t-L)
 ```
-i.e. total allocation of item i cannot exceed on-hand stock plus this period's arriving order.
+i.e. total allocation of item i cannot exceed on-hand stock plus this period's arriving order. The policy may allocate less than what is available (a strategic hold) even when demand could be fully covered.
 
-### Rationing Actions
+### Baseline Rationing Policies
 
-Four built-in rationing strategies (extensible):
+`policies.py` implements four rule-based baselines the learned policy is compared against, each answering "who gets the next available unit?" one unit at a time (see `mdp.py`'s module docstring for why the action is unit-by-unit rather than a whole allocation vector):
 
-1. **Action 0 - FCFS (First-Come-First-Served):** Serve customers in index order
-2. **Action 1 - SLA-Gap Myopic:** Prioritize customer furthest from SLA target
-3. **Action 2 - Proportional:** Allocate proportional to demand (largest-remainder method)
-4. **Action 3 - Cost-Based Greedy:** Assign each unit to customer with highest SLA-penalty risk
+1. **FCFSPolicy:** Serves the lowest-index customer still owed a unit
+2. **SlaGapPolicy:** Serves whichever eligible customer is furthest past its SLA backorder allowance
+3. **CostGreedyPolicy:** Serves whichever eligible customer has the largest projected SLA-penalty exposure if withheld
+4. **GreedyDynamicPolicy:** Switches between the three above based on how close any customer is to breaching its allowance
+
+None of these are prescribed by the paper itself — the paper leaves the allocation policy π to be optimized; these exist purely as benchmarks for the learned policy.
 
 ## Cost Structure
 
@@ -83,11 +84,11 @@ C_hold(t) = Σ_i h_i * OH_i(t+1)
 ```
 Charged on inventory remaining after allocation, i.e. OH_i(t+1), not on-hand stock before allocation.
 
-### SLA Penalty (At Horizon End)
+### SLA Penalty (At Horizon End, Per Customer)
 ```
 C_penalty = Σ_k p_k * max(0, Σ̄BO_k(T_k) - β_k)
 ```
-Σ̄BO_k(T_k) is inclusive of the horizon's last period's own backorder, not just the periods before it.
+Assessed independently for each customer k at the end of *that customer's own* review horizon T_k. Σ̄BO_k(T_k) is inclusive of the horizon's last period's own backorder, not just the periods before it.
 
 ### Objective
 
@@ -101,151 +102,52 @@ The allocation policy π is chosen to minimize long-run average cost per period 
 4. **Observe Demand:** D_{k,i}(t) realized per customer-item pair
 5. **Check Rationing:** Is Σ_BO + Σ_D > OH? (per item)
 6. **Allocate:** Policy π(s_t) decides allocation when rationing needed
-7. **Update State:** OH, BO and cumulative backorder Σ̄BO_k updated based on allocations (Σ̄BO_k resets at horizon end)
-8. **Calculate Costs:** Holding costs every period, SLA penalties (vs. backorder allowance β_k) at horizon end
+7. **Update State:** OH, BO and cumulative backorder Σ̄BO_k updated based on allocations (Σ̄BO_k resets at each customer's own horizon end)
+8. **Calculate Costs:** Holding costs every period, SLA penalties (vs. backorder allowance β_k) at each customer's horizon end
 
 ## Deep Controlled Learning
 
-The system uses DCL to learn an optimal allocation policy by:
-
-1. **State Features:** Extract relevant inventory, demand, and SLA metrics from state
-2. **Action Sampling:** Evaluate different rationing strategies on sampled trajectories
-3. **Progressive Refinement:** Sequential Halving algorithm identifies promising actions
-4. **Neural Network Learning:** GC-LSN network learns features → action mapping
-
-### DCL Components
-
-- **Sequential Halving:** Eliminates unpromising actions early
-- **Sample Generator:** Creates realistic demand scenarios
-- **Uniform Action Selector:** Fallback strategy for exploration
-- **Neural Network Weights:** Pre-trained GC-LSN weights in `gc-lsn-weights/`
+The allocation policy is learned using [DynaPlex](https://dynaplex.github.io/DynaPlex/)'s Deep Controlled Learning (`dp.DCL`): starting from a rollout policy (`GreedyDynamicPolicy` here), it samples candidate actions, evaluates them via lookahead rollouts, and trains a neural network on the best-performing action at each decision point, repeating over successive generations. See `train_and_compare.py` for the full training + comparison loop and `network.py` for the custom `BlockMLP` network used.
 
 ## Repository Structure
 
 ```
 .
-├── src/
-│   ├── lib/models/multi_customer_sla/
-│   │   ├── mdp.h / mdp.cpp          # Core MDP model
-│   │   ├── policies.h / policies.cpp # Policy implementations
-│   │   └── allocation_network.h/cpp  # Allocation decision network
-│   ├── algorithms/dcl/
-│   │   ├── dcl.h / dcl.cpp           # Deep Controlled Learning
-│   │   ├── sequentialhalving.*       # Sequential Halving algorithm
-│   │   ├── uniformactionselector.*   # Uniform action selector
-│   │   └── samplegenerator.cpp       # Sample generation
-│   ├── executables/multi_customer_sla/
-│   │   ├── multi_customer_sla.cpp           # Main simulation entry point
-│   │   ├── multi_customer_sla_simple.cpp    # Simplified example
-│   │   ├── dcl_allocation_learn_full.cpp    # Full DCL learning
-│   │   ├── bsl_sensitivity_analysis.cpp     # Base-stock level sensitivity
-│   │   └── action3_comparison.cpp           # Cost-based greedy comparison
-│   └── tests/
-│       └── t_multi_customer_sla.cpp  # Unit tests
 ├── docs/
 │   └── paper_improved_complete.tex   # Full paper with model formulation
-├── gc-lsn-weights/
-│   ├── GC-LSN.json                  # Network architecture
-│   └── GC-LSN.pth                   # Pre-trained weights
+├── python/multi_customer_sla/
+│   ├── mdp.py                        # MDP, State, featurizer
+│   ├── policies.py                   # FCFSPolicy, SlaGapPolicy, CostGreedyPolicy, GreedyDynamicPolicy
+│   ├── network.py                    # BlockMLP: custom PyTorch policy network
+│   ├── train_and_compare.py          # DCL training + PolicyComparer example
+│   └── validate.py                   # Plain-CPython invariant checks
 └── README.md (this file)
 ```
 
 ## Key Features
 
-✅ **Multi-Customer Support:** Heterogeneous SLA constraints per customer  
-✅ **Cumulative Backorder Tracking:** Realistic SLA compliance measurement  
-✅ **Time-Varying Demand:** Optional seasonal/cyclic demand patterns  
-✅ **Multiple Rationing Actions:** FCFS, SLA-gap, proportional, cost-based  
-✅ **Deep Controlled Learning:** Policy optimization via neural networks  
-✅ **Flexible Architecture:** Extensible for additional rationing strategies  
+✅ **Multi-Customer Support:** Heterogeneous SLA constraints per customer, including independent per-customer review horizons
+✅ **Cumulative Backorder Tracking:** Realistic SLA compliance measurement
+✅ **Unit-by-Unit Allocation Decision:** The learned policy allocates each scarce unit directly, not from a fixed menu of rationing rules
+✅ **Rule-Based Baselines:** FCFS, SLA-gap, cost-based-greedy, and a dynamic switch between them, for comparison against the learned policy
+✅ **Deep Controlled Learning:** Policy optimization via neural networks
 
-## Build & Compile
+## Implementation (Official DynaPlex / DynaML)
 
-This code integrates with the DynaPlex framework. To build:
+`python/multi_customer_sla/` implements the model on the **official** `dynaplex` package (dynaplex.github.io/DynaPlex, `pip install dynaplex`), with models authored in **DynaML**, a compiled Python subset.
+
+It implements `docs/paper_improved_complete.tex` directly: the action *is* the allocation decision A_{c,i}(t) itself (built from a sequence of scalar "who gets the next unit" decisions, since DynaML actions are always a single int — see the module docstring in `mdp.py`), not a choice among a fixed menu of rationing heuristics.
 
 ```bash
-# Requires DynaPlex framework setup
-# See https://github.com/tarkantemizoz/DynaPlex for complete setup
-
-cd /path/to/DynaPlex
-cmake -B build
-cmake --build build
+pip install dynaplex   # Python 3.11-3.14; see dynaplex.github.io for platforms
+cd python/multi_customer_sla
+python validate.py           # plain-CPython invariant checks
+python train_and_compare.py  # DCL training + PolicyComparer (requires torch)
 ```
 
-## Configuration Example
+Scope: `mdp.py` implements the full MDP, its state, and a featurizer exposing the paper's declared state variables. `policies.py` has the four rule-based baseline policies described above, used as DCL's generation-0 rollout policy and as comparison baselines. `network.py` has `BlockMLP`, a custom PyTorch network with real autograd that encodes the featurizer's feature blocks separately before a shared trunk, wired into `DCL` via `dynaplex.nn.Net`'s importable-factory contract; `dp.MLP` also works against this model (tested) if a plain flat-vector MLP is preferred instead.
 
-### Multi-Customer Multi-Item Setup
-
-```cpp
-VarGroup config;
-config.Add("numberOfCustomers", 2);           // 2 customers
-config.Add("numberOfItems", 3);               // 3 items
-
-// Lead times (per item)
-config.Add("leadTimes", std::vector<int64_t>{2, 3, 1});
-
-// Holding costs (per item)
-config.Add("holdingCosts", std::vector<double>{1.0, 0.8, 1.2});
-
-// Per-customer SLA
-config.Add("backorderAllowances", std::vector<int64_t>{6, 8});    // β_k
-config.Add("reviewHorizons", std::vector<int64_t>{20, 20});       // T_k
-config.Add("penaltyCosts", std::vector<double>{50.0, 60.0});      // p_k
-
-// Total demand rate per customer (across items), used to normalize
-// cumulative-stockout and observed-demand state features
-config.Add("customerDemandRates", std::vector<double>{2.3, 1.9});
-
-// Base-stock levels (per item)
-config.Add("baseStockLevel", std::vector<int64_t>{25, 30, 20});
-
-// Demand (per customer, per item)
-std::vector<double> demandRates;
-// Customer 0: item 0,1,2
-demandRates.push_back(1.0);   // λ_{0,0}
-demandRates.push_back(0.8);   // λ_{0,1}
-demandRates.push_back(0.5);   // λ_{0,2}
-// Customer 1: item 0,1,2
-demandRates.push_back(0.7);   // λ_{1,0}
-demandRates.push_back(1.2);   // λ_{1,1}
-demandRates.push_back(0.6);   // λ_{1,2}
-config.Add("demandRates", demandRates);
-
-// Demand distributions
-config.Add("highDemandVariance", std::vector<int64_t>(6, 0));  // 0=Poisson, 1=Geometric
-
-// Rationing actions
-config.Add("totalRationingActions", 4);
-config.Add("benchmarkRationingAction", 1);  // SLA-gap myopic
-
-MDP mdp(config);
-```
-
-## Example: Simple Simulation
-
-See `src/executables/multi_customer_sla/multi_customer_sla_simple.cpp` for a complete working example that:
-1. Creates a 2-customer, 2-item inventory system
-2. Runs a base-stock policy with proportional rationing
-3. Tracks cumulative backorders and SLA penalties
-4. Reports total cost and each customer's cumulative backorder against its allowance
-
-## Learning Experiments
-
-### DCL Allocation Learning (`dcl_allocation_learn_full.cpp`)
-- Compares 4 rationing actions on 1,000+ samples
-- Uses Sequential Halving for action elimination
-- Measures average cost per action
-- Outputs best-performing policy
-
-### Sensitivity Analysis (`bsl_sensitivity_analysis.cpp`)
-- Varies base-stock levels (S_i) from low to high
-- Measures impact on holding costs and stockouts
-- Helps optimize inventory investment
-
-### Action Comparison (`action3_comparison.cpp`)
-- Detailed cost breakdown per rationing action
-- SLA compliance rates
-- Identifies cost-benefit of each strategy
+Verified against the real package: `assert_mdp` / `assert_policy_for_mdp` / `assert_featurizer_for_mdp` for the MDP and all four policies, a plain-CPython simulation checking the paper's invariants across all four policies (`validate.py`), DynaML compilation of the MDP and every policy (including `GreedyDynamicPolicy`'s composition of the other three) under the JIT `engine` backend, a real PyTorch backward pass through `BlockMLP` confirming every parameter receives a gradient, and end-to-end `DCL` training + `PolicyComparer` runs with both `BlockMLP` and `dp.MLP`.
 
 ## Related Work
 
@@ -260,7 +162,7 @@ This research builds on:
 1. Sherbrooke, C.C. (1968). "METRIC: A Multi-Echelon Technique for Recoverable Item Control"
 2. Temizoz, T., et al. (2025). "Deep Controlled Learning for Inventory Control"
 3. Boute, R.N., et al. (2022). "Deep Reinforcement Learning for Inventory Control: A Roadmap"
-4. Temizoz, T., et al. (2026). "How to ace your next service level contract review?" (working paper)
+4. Temizoz, T., et al. (2026). "How to ace your next service level contract review?" 
 
 ## License
 
@@ -268,6 +170,4 @@ This project is released under the MIT License. See LICENSE file for details.
 
 ---
 
-**Documentation:** See `docs/` folder for detailed technical papers and experiment results.  
-**Pre-trained Models:** GC-LSN neural network weights available in `gc-lsn-weights/`.  
-
+**Documentation:** See `docs/` folder for detailed technical papers and experiment results.
