@@ -63,6 +63,36 @@ one per item, and the state-dimension formula |I|*L uses it uniformly. This
 port assumes L >= 1 (L == 0 -- same-period replenishment -- would need a
 different FifoQueue convention below and is not implemented).
 
+SLA penalty timing: which BO_c(t) does Step 6 mean?
+--------------------------------------------------------
+The paper is not fully self-consistent about what "BO_c(t)" means in the
+Step 6 penalty formula. Sec. 3.3.3 defines BO_{c,i}(t) as a STATE variable:
+backlog owed to customer c from PAST periods, observed at the START of
+period t (the same quantity Step 4 adds D_{c,i}(t) to, to get "owed" --
+i.e. it says nothing about period t's own outcome). But Step 6's own prose
+calls its BO_c(t) term "the backorder just REALIZED this period" and says
+omitting it would "miss the backorder INCURRED in the horizon's very last
+period" -- language that only makes sense if BO_c(t) there means the NEW
+backorder period t's OWN allocation shortfall generates, i.e. what Step 5's
+equation (293) calls BO_{c,i}(t+1), not BO_{c,i}(t) as defined in Sec.
+3.3.3. These are different quantities, and (checked by hand for T=3, with
+b_j := each period j's own generated shortfall) the two readings assign
+different periods' shortfalls to different horizons -- they are not
+equivalent up to relabeling.
+
+This port takes the second reading: cumulative_backorder[c] accumulates
+each period's OWN just-generated backorder (state.backorder immediately
+after that period's allocation finishes, i.e. the paper's BO_{c,i}(t+1) in
+Step 5's own indexing) as part of finalizing THAT SAME period, and the
+per-customer boundary/penalty check below runs immediately after, in the
+same pass -- so a horizon's penalty covers exactly the backorder GENERATED
+by that horizon's own periods' processing, not whatever backlog happened to
+be on the books entering those periods. Non-boundary periods match Step 5's
+own recursive update (293-307) exactly either way; only the boundary
+reading of Step 6 is ambiguous. Flagged for Tarkan/Willem -- Sec. 3.3.3's
+definition and Step 6's own prose point in different directions, and only
+one can be exactly "the paper, implemented literally."
+
 On-hand representation (OH'_i(t), not separately OH_i(t))
 ------------------------------------------------------------
 The paper's own state dimension count folds OH'_i(t) = OH_i(t) + Q_i(t-L)
