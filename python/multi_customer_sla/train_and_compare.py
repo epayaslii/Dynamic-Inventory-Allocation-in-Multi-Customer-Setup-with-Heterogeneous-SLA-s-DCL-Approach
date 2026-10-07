@@ -9,6 +9,9 @@ Run directly from this directory (`python train_and_compare.py`). Artifacts
 (samples, trained agents) land in dynaplex_runs/; rerunning resumes rather
 than recomputes.
 """
+import argparse
+import time
+
 import dynaplex as dp
 
 from mdp import MultiCustomerSlaFeaturizer, MultiCustomerSlaMDP
@@ -18,6 +21,13 @@ BASE_STOCK = 6  # same constant for every item (matches compare_baselines.py)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n", type=int, default=8000, help="labeled samples per generation")
+    parser.add_argument("--m", type=int, default=200, help="rollouts per candidate action")
+    parser.add_argument("--h", type=int, default=100, help="rollout horizon (periods)")
+    parser.add_argument("--generations", type=int, default=3)
+    args = parser.parse_args()
+
     # 2 customers, 3 items -- same illustrative instance as the project
     # README's C++ configuration example, translated to this MDP's fields
     # (a single shared lead_time per paper Sec. 3.1; review_horizon is
@@ -72,14 +82,16 @@ def main() -> None:
     d = dp.DCL(
         mdp, greedy_dynamic,                # generation-0 rollout policy
         features=MultiCustomerSlaFeaturizer,
-        n=8000,                             # labeled samples per generation
-        m=200,                              # rollouts per candidate action
-        h=100,                              # rollout horizon (periods)
+        n=args.n,                           # labeled samples per generation
+        m=args.m,                           # rollouts per candidate action
+        h=args.h,                           # rollout horizon (periods)
         network=custom_network,
         train=dict(loss="ce", epochs=50, batch_size=64, lr=1e-3,
                    patience=10, val_fraction=0.1),
     )
-    agents = d.run(generations=3)
+    start = time.time()
+    agents = d.run(generations=args.generations)
+    print(f"DCL training time: {time.time() - start:.0f}s")
 
     comparer = dp.PolicyComparer(
         mdp,
