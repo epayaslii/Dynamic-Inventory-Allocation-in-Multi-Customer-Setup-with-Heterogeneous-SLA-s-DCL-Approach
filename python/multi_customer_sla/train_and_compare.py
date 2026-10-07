@@ -14,6 +14,8 @@ import dynaplex as dp
 from mdp import MultiCustomerSlaFeaturizer, MultiCustomerSlaMDP
 from policies import CostGreedyPolicy, FCFSPolicy, GreedyDynamicPolicy, SlaGapPolicy
 
+BASE_STOCK = 6  # same constant for every item (matches compare_baselines.py)
+
 
 def main() -> None:
     # 2 customers, 3 items -- same illustrative instance as the project
@@ -30,10 +32,11 @@ def main() -> None:
         penalty_costs=[50.0, 60.0],
         # customer 0: items 0,1,2 ; customer 1: items 0,1,2
         demand_rates=[1.0, 0.8, 0.5, 0.7, 1.2, 0.6],
-        base_stock_level=[6, 7, 5],  # understocked relative to demand, so
-        # rationing (and thus the learned allocation decision) actually
-        # happens -- generous base stock would make every period fully
-        # covered and the action space moot, per the module docstring.
+        base_stock_level=[BASE_STOCK] * 3,  # one constant level for every
+        # item, held fixed: only the allocation is learned here. Tight enough
+        # that rationing (and thus the learned decision) actually happens --
+        # generous base stock would make every period fully covered and the
+        # action space moot, per the module docstring.
         high_demand_variance=[0, 0, 0, 0, 0, 0],
     )
 
