@@ -72,7 +72,6 @@ def main() -> None:
         n=8000,                             # labeled samples per generation
         m=200,                              # rollouts per candidate action
         h=100,                              # rollout horizon (periods)
-        workers=8, slots=256,
         network=custom_network,
         train=dict(loss="ce", epochs=50, batch_size=64, lr=1e-3,
                    patience=10, val_fraction=0.1),

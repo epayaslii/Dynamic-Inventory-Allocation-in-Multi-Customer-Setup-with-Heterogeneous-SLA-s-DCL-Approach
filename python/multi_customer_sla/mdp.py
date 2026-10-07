@@ -259,6 +259,10 @@ class MultiCustomerSlaMDP:
             q[0] = self.base_stock_level[i]
             pipelines.append(q)
 
+        time_remaining: list[int] = []
+        for c in range(self.number_of_customers):
+            time_remaining.append(self.review_horizon[c])
+
         n_pairs = self.number_of_customers * self.number_of_items
         return State(
             pipelines=pipelines,
@@ -266,7 +270,7 @@ class MultiCustomerSlaMDP:
             current_demand=[0] * n_pairs,
             current_allocation=[0] * n_pairs,
             cumulative_backorder=[0.0] * self.number_of_customers,
-            time_remaining=list(self.review_horizon),
+            time_remaining=time_remaining,
             alloc_item=0,
             alloc_owed=[0] * self.number_of_customers,
             alloc_on_hand=0,
