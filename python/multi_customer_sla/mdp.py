@@ -63,35 +63,31 @@ one per item, and the state-dimension formula |I|*L uses it uniformly. This
 port assumes L >= 1 (L == 0 -- same-period replenishment -- would need a
 different FifoQueue convention below and is not implemented).
 
-SLA penalty timing: which BO_c(t) does Step 6 mean?
---------------------------------------------------------
-The paper is not fully self-consistent about what "BO_c(t)" means in the
-Step 6 penalty formula. Sec. 3.3.3 defines BO_{c,i}(t) as a STATE variable:
-backlog owed to customer c from PAST periods, observed at the START of
-period t (the same quantity Step 4 adds D_{c,i}(t) to, to get "owed" --
-i.e. it says nothing about period t's own outcome). But Step 6's own prose
-calls its BO_c(t) term "the backorder just REALIZED this period" and says
-omitting it would "miss the backorder INCURRED in the horizon's very last
-period" -- language that only makes sense if BO_c(t) there means the NEW
-backorder period t's OWN allocation shortfall generates, i.e. what Step 5's
-equation (293) calls BO_{c,i}(t+1), not BO_{c,i}(t) as defined in Sec.
-3.3.3. These are different quantities, and (checked by hand for T=3, with
-b_j := each period j's own generated shortfall) the two readings assign
-different periods' shortfalls to different horizons -- they are not
-equivalent up to relabeling.
+SLA penalty timing: backorders are counted at the BEGINNING of each period
+--------------------------------------------------------------------------
+BO_c(t) is the backlog owed to customer c ENTERING period t, i.e. before
+period t's demand is added and before period t's allocation (paper Sec.
+3.3.3). The cumulative sum BObar_c(t) adds up BO_c(j) over the EARLIER periods
+j of the current review horizon and does NOT include period t itself:
+    BObar_c(t)   = sum_{j = (r-1)T+1}^{t-1} BO_c(j)       (0 in a horizon's
+                                                            first period)
+    BObar_c(t+1) = BObar_c(t) + BO_c(t)    inside a horizon
+                 = 0                       when period t+1 starts a horizon
+and the penalty at a horizon's last period t = rT is
+    p_c * max(0, BObar_c(t) + BO_c(t) - beta_c).
+So the backorder that period t's OWN allocation creates, BO_c(t+1), is not
+charged in the horizon containing t; it is the next period's beginning-of-
+period backorder. In particular the backorder created by a horizon's last
+period counts towards the NEXT horizon.
 
-This port takes the second reading: cumulative_backorder[c] accumulates
-each period's OWN just-generated backorder (state.backorder immediately
-after that period's allocation finishes, i.e. the paper's BO_{c,i}(t+1) in
-Step 5's own indexing) as part of finalizing THAT SAME period, and the
-per-customer boundary/penalty check below runs immediately after, in the
-same pass -- so a horizon's penalty covers exactly the backorder GENERATED
-by that horizon's own periods' processing, not whatever backlog happened to
-be on the books entering those periods. Non-boundary periods match Step 5's
-own recursive update (293-307) exactly either way; only the boundary
-reading of Step 6 is ambiguous. Flagged for Tarkan/Willem -- Sec. 3.3.3's
-definition and Step 6's own prose point in different directions, and only
-one can be exactly "the paper, implemented literally."
+Implementation: modify_state_with_event records each customer's total entering
+backlog in state.entering_backorder before anything in the period changes
+state.backorder; _finalize_period adds that to cumulative_backorder[c], then
+runs the per-customer boundary/penalty check. Adding the entering backlog and
+then testing the boundary is exactly the two cases above. (An earlier version
+of this file instead added the backorder left AFTER the period's allocation,
+i.e. BO_c(t+1); the paper's text was ambiguous and has since been settled in
+favour of the beginning-of-period reading above.)
 
 On-hand representation (OH'_i(t), not separately OH_i(t))
 ------------------------------------------------------------
@@ -143,9 +139,13 @@ class State:
     current_demand / current_allocation[c*|I|+i]: this period's D_{c,i}(t)
       (fixed once sampled) / A_{c,i}(t) (grows as unit-decisions are made),
       flattened the same way.
-    cumulative_backorder[c]: BObar_c(t), reset for customer c at ITS OWN
-      review-horizon boundary (see module docstring: review horizons are
-      per-customer, T_k).
+    cumulative_backorder[c]: BObar_c(t), the sum of beginning-of-period
+      backorders of EARLIER periods in the horizon (excludes period t); reset
+      for customer c at ITS OWN review-horizon boundary (see module
+      docstring: review horizons are per-customer, T_k).
+    entering_backorder[c]: BO_c(t), customer c's total backlog entering the
+      current period, recorded before the period's allocation changes
+      `backorder`; added to cumulative_backorder when the period finalizes.
     time_remaining[c]: T_rem for customer c -- one independent counter per
       customer, each cycling through its own review_horizon[c].
     alloc_item / alloc_owed / alloc_on_hand / alloc_available: scratch state
@@ -161,6 +161,7 @@ class State:
     current_demand: list[int]
     current_allocation: list[int]
     cumulative_backorder: list[float]
+    entering_backorder: list[int]
     time_remaining: list[int]
     alloc_item: int
     alloc_owed: list[int]
@@ -270,6 +271,7 @@ class MultiCustomerSlaMDP:
             current_demand=[0] * n_pairs,
             current_allocation=[0] * n_pairs,
             cumulative_backorder=[0.0] * self.number_of_customers,
+            entering_backorder=[0] * self.number_of_customers,
             time_remaining=time_remaining,
             alloc_item=0,
             alloc_owed=[0] * self.number_of_customers,
@@ -280,6 +282,14 @@ class MultiCustomerSlaMDP:
         )
 
     def modify_state_with_event(self, state: State, context: TrajectoryContext) -> None:
+        # BO_c(t): backlog entering this period, recorded before anything below
+        # (allocation, in particular) changes state.backorder.
+        for c in range(self.number_of_customers):
+            entering = 0
+            for i in range(self.number_of_items):
+                entering += state.backorder[c * self.number_of_items + i]
+            state.entering_backorder[c] = entering
+
         # Steps 1-2 (paper): static base-stock ordering for every item.
         # Action-independent, so it runs unconditionally here, before any
         # allocation decision -- matching the paper's period workflow, where
@@ -411,11 +421,10 @@ class MultiCustomerSlaMDP:
     def _finalize_period(self, state: State, context: TrajectoryContext) -> None:
         state.period += 1
 
+        # Beginning-of-period accounting (see module docstring): add BO_c(t),
+        # the backlog that ENTERED this period, not the backlog left after it.
         for c in range(self.number_of_customers):
-            bo_c = 0
-            for i in range(self.number_of_items):
-                bo_c += state.backorder[c * self.number_of_items + i]
-            state.cumulative_backorder[c] += float(bo_c)
+            state.cumulative_backorder[c] += float(state.entering_backorder[c])
 
         # Per-customer review horizons (see module docstring): each
         # customer's SLA is assessed, and its cumulative sum reset, on ITS

@@ -23,12 +23,17 @@ def run(mdp: MultiCustomerSlaMDP, policy, periods: int, seed: int):
 
     action_calls = 0
     periods_seen = 0
+    # entering_history[c][j-1] = BO_c(j), customer c's total backlog at the BEGINNING of period j
+    entering_history: list[list[int]] = [[] for _ in range(mdp.number_of_customers)]
     max_actions_this_period = 0
     actions_this_period = 0
 
     while periods_seen < periods:
         if state.category == StateCategory.AWAIT_EVENT:
             before_period = state.period
+            for c in range(mdp.number_of_customers):
+                entering_history[c].append(sum(
+                    state.backorder[c * mdp.number_of_items + i] for i in range(mdp.number_of_items)))
             mdp.modify_state_with_event(state, context)
             max_actions_this_period = max(max_actions_this_period, actions_this_period)
             actions_this_period = 0
@@ -41,6 +46,18 @@ def run(mdp: MultiCustomerSlaMDP, policy, periods: int, seed: int):
                         assert state.pipelines[i][j] >= 0, "negative pipeline/on-hand slot"
                 for v in state.cumulative_backorder:
                     assert v >= 0.0
+                # Paper: BObar_c(t+1) = sum of BO_c(j) over the periods j of the
+                # horizon containing t+1 that are <= t (beginning-of-period
+                # backorders, excluding period t+1 itself). Recomputed here from
+                # the recorded history, independently of the state's running sum.
+                t = state.period
+                for c in range(mdp.number_of_customers):
+                    horizon = mdp.review_horizon[c]
+                    first_period_of_next_horizon = ((t + horizon) // horizon - 1) * horizon + 1
+                    expected = sum(entering_history[c][first_period_of_next_horizon - 1:t])
+                    assert state.cumulative_backorder[c] == float(expected), (
+                        f"cumulative_backorder[{c}]={state.cumulative_backorder[c]} != "
+                        f"paper formula {expected} after period {t}")
                 for c in range(mdp.number_of_customers):
                     assert 1 <= state.time_remaining[c] <= mdp.review_horizon[c]
                 assert context.cumulative_cost >= 0.0
