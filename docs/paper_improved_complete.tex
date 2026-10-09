@@ -206,11 +206,11 @@ Units of item $i$ still owed to customer $c$ from past periods' unmet demand. A 
 as defined above.
 
 \subsubsection{Cumulative Backorder Sum ($|C|$ features)}
-Running sum of each customer's total backorder, accumulated from the start of the current review horizon \emph{through period $t$ itself}:
+Running sum of each customer's total backorder over the earlier periods of the current review horizon, \emph{not including period $t$ itself}:
 \begin{equation}
-    \overline{\text{BO}}_c(t) = \sum_{j=(r-1)T+1}^{t} \text{BO}_c(j), \qquad r = r(t),
+    \overline{\text{BO}}_c(t) = \sum_{j=(r-1)T+1}^{t-1} \text{BO}_c(j), \qquad r = r(t),
 \end{equation}
-where $\text{BO}_c(j) = \sum_{i \in I} \text{BO}_{c,i}(j)$ is customer $c$'s total backorder at the end of period $j$. This resets to 0 at the start of each new review horizon (see the update rule in Step 5 below).
+where $\text{BO}_c(j) = \sum_{i \in I} \text{BO}_{c,i}(j)$ is customer $c$'s total backorder at the \emph{beginning} of period $j$, i.e., what is owed from earlier periods' unmet demand. The sum is empty, and $\overline{\text{BO}}_c(t) = 0$, in the first period of every review horizon. It resets to 0 at the start of each new review horizon (see the update rule in Step 5 below).
 
 \subsubsection{Time Remaining ($1$ feature)}
 \begin{equation}
@@ -221,7 +221,7 @@ where $\text{BO}_c(j) = \sum_{i \in I} \text{BO}_{c,i}(j)$ is customer $c$'s tot
 \begin{equation}
     \beta_c \geq 0, \quad c \in C
 \end{equation}
-Maximum cumulative backorder units tolerated for customer $c$ per review horizon; a penalty is charged if $\overline{\text{BO}}_c(rT) > \beta_c$ at horizon end.
+Maximum cumulative backorder units tolerated for customer $c$ per review horizon; a penalty is charged if $\overline{\text{BO}}_c(rT) + \text{BO}_c(rT) > \beta_c$ at horizon end, i.e., if the backorders at the beginning of the horizon's periods sum to more than $\beta_c$.
 
 \textbf{Total state dimension:}
 \begin{equation}
@@ -302,11 +302,11 @@ Unmet demand becomes backorder carried into the next period.
 \textbf{Cumulative backorder sum:}
 \begin{equation}
     \overline{\text{BO}}_c(t+1) = \begin{cases}
-        \overline{\text{BO}}_c(t) + \text{BO}_c(t+1) & \text{if } t < r(t) \cdot T \quad \text{(still inside the same horizon)} \\
-        \text{BO}_c(t+1) & \text{if } t = r(t) \cdot T \quad \text{(period $t+1$ starts a new horizon)}
+        \overline{\text{BO}}_c(t) + \text{BO}_c(t) & \text{if } t < r(t) \cdot T \quad \text{(still inside the same horizon)} \\
+        0 & \text{if } t = r(t) \cdot T \quad \text{(period $t+1$ starts a new horizon)}
     \end{cases}
 \end{equation}
-Individual backorders $\text{BO}_{c,i}(t+1)$ persist across horizon boundaries — only the cumulative sum $\overline{\text{BO}}_c$ restarts, folding in period $t+1$'s own backorder as the first term of the new horizon.
+Individual backorders $\text{BO}_{c,i}(t+1)$ persist across horizon boundaries — only the cumulative sum $\overline{\text{BO}}_c$ restarts, at 0. Period $t+1$'s own backorder is not part of $\overline{\text{BO}}_c(t+1)$; it enters the sum at the next period, as $\text{BO}_c(t+1)$. In particular, the backorder created by the last period of a horizon is carried over and counts towards the next horizon, as the backorder at the beginning of that horizon's first period.
 
 \textbf{Time remaining:}
 \begin{equation}
@@ -329,11 +329,11 @@ charged on inventory remaining \emph{after} this period's allocation, i.e., what
 \textbf{SLA penalty (at horizon end only):}
 \begin{equation}
     C_{\text{penalty}}(t) = \begin{cases}
-        \sum_{c \in C} p_c \cdot \max\!\Big(0,\; \underbrace{\overline{\text{BO}}_c(t)}_{\text{prior periods this horizon}} + \underbrace{\text{BO}_c(t+1)}_{\text{this period's own backorder}} - \; \beta_c\Big) & \text{if } T_{\text{rem}}(t) = 0 \text{ (end of horizon)} \\
+        \sum_{c \in C} p_c \cdot \max\!\Big(0,\; \underbrace{\overline{\text{BO}}_c(t)}_{\text{earlier periods this horizon}} + \underbrace{\text{BO}_c(t)}_{\text{beginning of this period}} - \; \beta_c\Big) & \text{if } T_{\text{rem}}(t) = 0 \text{ (end of horizon)} \\
         0 & \text{otherwise}
     \end{cases}
 \end{equation}
-$\overline{\text{BO}}_c(t-1)$ sums backorder over the horizon's periods up to but not including $t$; adding $\text{BO}_c(t)$ explicitly folds in the backorder just realized this period, matching the recursive definition $\overline{\text{BO}}_c(t) = \overline{\text{BO}}_c(t-1) + \text{BO}_c(t)$ from Step 5. Without this term the penalty would miss the backorder incurred in the horizon's very last period.
+$\overline{\text{BO}}_c(t)$ sums the backorder at the beginning of the horizon's periods up to but not including $t$; adding $\text{BO}_c(t)$ explicitly folds in the backorder at the beginning of the horizon's last period, so that the penalty covers the backorder at the beginning of every period of the horizon. The backorder created by the last period's own allocation, $\text{BO}_c(t+1)$, is not charged in this horizon; it is the beginning-of-period backorder of the next horizon's first period.
 
 \textbf{Total period cost:}
 \begin{equation}
@@ -360,6 +360,9 @@ The allocation policy $\pi(s_t)$ can be learned via various approaches (e.g., De
 
 \section{Numerical Results}
 \label{sec:results}
+% TODO: the numbers below were produced with the code's earlier end-of-period backorder
+% accounting (mdp.py _finalize_period). The model above now uses beginning-of-period
+% backorders, so mdp.py must be updated and these experiments rerun before submission.
 
 This section reports a first numerical study of the allocation decision (RQ2). The base-stock levels $S_i$ are held fixed and identical across items throughout, so any cost difference between policies is due to the allocation policy alone. Optimizing $\mathbf{S}$ (RQ1) is left for a later stage.
 
