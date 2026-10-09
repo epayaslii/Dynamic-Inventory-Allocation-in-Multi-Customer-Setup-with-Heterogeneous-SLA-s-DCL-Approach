@@ -37,7 +37,7 @@ Each customer k has:
 | **Q_i(t-1...t-L)** | Pipeline orders in transit | \|I\|×L features |
 | **BO_{k,i}(t)** | Backorder per customer-item | \|C\|×\|I\| features |
 | **D_{k,i}(t)** | Realized demand (current period) | \|C\|×\|I\| features |
-| **Σ̄BO_k(t)** | Cumulative backorder within the review horizon, inclusive of period t itself | \|C\| features |
+| **Σ̄BO_k(t)** | Cumulative backorder within the review horizon: the sum of the beginning-of-period backorders of the *earlier* periods, not including period t itself (0 in a horizon's first period) | \|C\| features |
 | **T_rem_k(t)** | Time remaining in customer k's review horizon | \|C\| features |
 | **β_k** | SLA backorder allowance per customer | \|C\| features |
 
@@ -88,7 +88,7 @@ Charged on inventory remaining after allocation, i.e. OH_i(t+1), not on-hand sto
 ```
 C_penalty = Σ_k p_k * max(0, Σ̄BO_k(T_k) - β_k)
 ```
-Assessed independently for each customer k at the end of *that customer's own* review horizon T_k. Σ̄BO_k(T_k) is inclusive of the horizon's last period's own backorder, not just the periods before it.
+Assessed independently for each customer k at the end of *that customer's own* review horizon T_k, with the backorder BO_k(T_k) that enters the horizon's last period added to Σ̄BO_k(T_k) (backorders are counted at the beginning of each period). The backorder created by the last period's own allocation is carried over and counts towards the next horizon.
 
 ### Objective
 
@@ -102,7 +102,7 @@ The allocation policy π is chosen to minimize long-run average cost per period 
 4. **Observe Demand:** D_{k,i}(t) realized per customer-item pair
 5. **Check Rationing:** Is Σ_BO + Σ_D > OH? (per item)
 6. **Allocate:** Policy π(s_t) decides allocation when rationing needed
-7. **Update State:** OH, BO and cumulative backorder Σ̄BO_k updated based on allocations (Σ̄BO_k resets at each customer's own horizon end)
+7. **Update State:** OH and BO updated based on allocations; Σ̄BO_k adds the backorder that entered the period (BO_k(t)), and resets to 0 at each customer's own horizon end
 8. **Calculate Costs:** Holding costs every period, SLA penalties (vs. backorder allowance β_k) at each customer's horizon end
 
 ## Deep Controlled Learning

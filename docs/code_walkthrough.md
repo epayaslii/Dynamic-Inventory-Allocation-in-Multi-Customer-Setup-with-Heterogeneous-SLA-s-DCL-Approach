@@ -74,7 +74,8 @@ the network which item a given unit-decision concerns.
 | `backorder[c*|I|+i]` | `BO_{c,i}(t)` | Units of item `i` owed to customer `c`, flattened. |
 | `current_demand` | `D_{c,i}(t)` | This period's sampled demand. |
 | `current_allocation` | `A_{c,i}(t)` | Grows as unit-decisions are made. |
-| `cumulative_backorder[c]` | `BObar_c(t)` | Running backorder sum inside the review horizon. |
+| `cumulative_backorder[c]` | `BObar_c(t)` | Sum of the beginning-of-period backorders of the earlier periods in the horizon (excludes period `t`). |
+| `entering_backorder[c]` | `BO_c(t)` | Customer `c`'s total backlog entering the period, recorded before allocation changes `backorder`. |
 | `time_remaining[c]` | `T_rem` | Periods left in customer `c`'s horizon. |
 | `alloc_*` | none | Scratch state for the item currently being rationed. |
 | `category` | none | `AWAIT_EVENT` (environment moves) or `AWAIT_ACTION` (policy moves). |
@@ -142,7 +143,7 @@ into slot 0, which becomes next period's `OH'_i(t+1)`.
 
 `_finalize_period` (mdp.py:407):
 
-- adds each customer's total new backorder into `cumulative_backorder[c]`;
+- adds each customer's entering backlog `BO_c(t)` (recorded at the start of the period) into `cumulative_backorder[c]`;
 - decrements `time_remaining[c]`; at zero it charges
   `p_c * max(0, cumulative_backorder[c] - beta_c)` and resets both counters;
 - returns to `AWAIT_EVENT`.
@@ -150,13 +151,11 @@ into slot 0, which becomes next period's `OH'_i(t+1)`.
 Each customer's horizon runs on its own clock. With equal `T_k` this is the
 paper's single-`T` model.
 
-**The one open ambiguity.** The paper defines `BO_{c,i}(t)` as the backlog
-*entering* period `t`, but the Step 6 penalty text says "the backorder just
-realized this period". The code takes the second reading (this period's own
-new backorder is included in the horizon that contains it).
-`docs/mdp_paper_alignment.md` section 5 works an example and flags it for
-Tarkan and Willem. It is a judgment call, not a derivation, so present it as an
-open question.
+**Backorder timing (settled).** Backorders are counted at the beginning of
+each period. The cumulative sum adds the backlog that *entered* period `t` and
+excludes the backorder created by period `t`'s own allocation, which counts from
+the next period (and, for a horizon's last period, towards the next horizon).
+`docs/backorder_timing_report.md` explains the decision and its effect.
 
 ### 1.7 `MultiCustomerSlaFeaturizer` (mdp.py:432)
 
@@ -268,6 +267,7 @@ the model is separated from a bug in training.
   and the chosen customer's `alloc_owed` by exactly one.
 - **`AlwaysHoldPolicy`** (validate.py:71): never serves anyone under scarcity.
   It exercises the HOLD branch, which none of the four baselines ever takes.
+- - **Backorder-accounting check:** after every period it recomputes `BObar_c` from the recorded history with the paper's sum formula and asserts it equals `cumulative_backorder[c]`.
 - It runs all four baselines for 500 periods and AlwaysHold for 200, then
   prints cost, number of action calls, and the maximum decisions in one
   period.
