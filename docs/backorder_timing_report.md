@@ -1,3 +1,8 @@
+> **SUPERSEDED.** This report describes a beginning-of-period backorder convention that was adopted for a
+> short time. The current paper (`docs/paper_improved_complete.tex`) counts backorders at the **end** of each
+> period, and the code follows it again (see `docs/mdp_paper_alignment.md`). The report is kept only as a record
+> of that discussion; its numbers do not describe the current code.
+
 # Backorder timing in the SLA penalty: decision, changes and effect on results
 
 For: Willem van Jaarsveld, Tarkan Temizoz

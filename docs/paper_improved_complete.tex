@@ -2,6 +2,10 @@
 %%  Multi-Customer, Multi-Item Inventory Management Under SLAs
 %%  A Deep Controlled Learning Approach with Dynamic Allocation
 %%  Enhanced Version with Detailed Experiments and DCL Framework
+%%
+%%  Revised version of main.tex: revised notation, one consistent
+%%  backorder convention (end of period), and corrections of
+%%  mathematical inconsistencies. main.tex is unchanged.
 %% ============================================================
 
 \documentclass[11pt, a4paper]{article}
@@ -65,13 +69,8 @@
 \newtheorem{remark}[theorem]{Remark}
 
 %% ---- Custom Commands ----
-\newcommand{\IL}{\text{IL}}
 \newcommand{\IP}{\text{IP}}
-\newcommand{\AFR}{\text{AFR}}
-\newcommand{\BO}{\text{BO}}
-\newcommand{\Q}{\mathbf{Q}}
-\newcommand{\S}{\mathbf{S}}
-\newcommand{\D}{\mathbf{D}}
+\newcommand{\OH}{\text{OH}}
 \newcommand{\E}{\mathbb{E}}
 \newcommand{\Real}{\mathbb{R}}
 \newcommand{\Nat}{\mathbb{N}}
@@ -97,7 +96,7 @@
 
     \vspace{2.5cm}
 
-    {\large \textit{Research Paper --- Model Implementation}}
+    {\large \textit{Research Paper: Model Implementation}}
 
     \vspace{2cm}
 
@@ -116,7 +115,7 @@
 \newpage
 \section{Problem Description}
 
-We consider a supplier that manages inventory at a single location and serves multiple customers under heterogeneous Service Level Agreements (SLAs). The supplier stocks a set of items $I$ (indexed $i \in I$, $|I| \geq 1$) and serves a set of customers $C$ (indexed $c \in C$, $|C| \geq 1$). Each customer-item pair has its own, generally heterogeneous, stochastic demand process, so different customers place very different demands on the same shared stock.
+We consider a supplier that manages inventory at a single location and serves multiple customers under heterogeneous Service Level Agreements (SLAs). The supplier stocks a set of items $I$ (indexed $i \in I$, $|I| \geq 1$) and serves a set of customers $\mathcal{C}$ (indexed $c \in \mathcal{C}$, $|\mathcal{C}| \geq 1$). Each customer-item pair has its own, generally heterogeneous, stochastic demand process, so different customers place very different demands on the same shared stock.
 
 \begin{figure}[H]
     \centering
@@ -129,243 +128,245 @@ We consider a supplier that manages inventory at a single location and serves mu
     ]
         \node[source] (Src) {External source};
         \node[supplier, below=of Src] (S) {Supplier\\[2pt] \footnotesize items $i \in I$, base-stock $S_i$};
-        \node[customer, below left=of S] (C1) {Customer 1\\[2pt] \footnotesize $\beta_1$, demand rate $\lambda_{1,i}$};
-        \node[customer, below=of S] (C2) {Customer 2\\[2pt] \footnotesize $\beta_2$, demand rate $\lambda_{2,i}$};
-        \node[customer, below right=of S] (C3) {Customer $|C|$\\[2pt] \footnotesize $\beta_{|C|}$, demand rate $\lambda_{|C|,i}$};
+        \node[customer, below left=of S] (C1) {Customer 1\\[2pt] \footnotesize $\beta_1$, demand rate $\lambda_{1i}$};
+        \node[customer, below=of S] (C2) {Customer 2\\[2pt] \footnotesize $\beta_2$, demand rate $\lambda_{2i}$};
+        \node[customer, below right=of S] (C3) {Customer $|\mathcal{C}|$\\[2pt] \footnotesize $\beta_{|\mathcal{C}|}$, demand rate $\lambda_{|\mathcal{C}|i}$};
 
-        \draw[arrow] (Src) -- (S) node[midway, right, font=\scriptsize] {$Q_i(t) = \max(0, S_i - \text{IP}_i(t))$};
-        \draw[arrow] (S) -- (C1) node[midway, above left, sloped, font=\scriptsize] {$A_{1,i}(t)$};
-        \draw[arrow] (S) -- (C2) node[midway, right, font=\scriptsize] {$A_{2,i}(t)$};
-        \draw[arrow] (S) -- (C3) node[midway, above right, sloped, font=\scriptsize] {$A_{|C|,i}(t)$};
+        \draw[arrow] ([xshift=-5mm]S.north) -- ([xshift=-5mm]Src.south) node[midway, left, font=\scriptsize] {order $q_{it} = (S_i - \IP_{it})^+$};
+        \draw[arrow] ([xshift=5mm]Src.south) -- ([xshift=5mm]S.north) node[midway, right, font=\scriptsize] {delivery $q_{i,t-\tau}$};
+        \draw[arrow] (S) -- (C1) node[midway, above left, sloped, font=\scriptsize] {$a_{1it}$};
+        \draw[arrow] (S) -- (C2) node[midway, right, font=\scriptsize] {$a_{2it}$};
+        \draw[arrow] (S) -- (C3) node[midway, above right, sloped, font=\scriptsize] {$a_{|\mathcal{C}|it}$};
     \end{tikzpicture}
-    \caption{Two decisions govern the supplier's operation each period: (RQ1) an \emph{ordering} decision $Q_i(t)$ that replenishes stock from an external source under a static base-stock policy, and (RQ2) an \emph{allocation} decision $A_{c,i}(t)$ that dynamically splits available stock across customers $c \in C$ once demand is realized. Customers differ in demand rate $\lambda_{c,i}$ and in their SLA backorder allowance $\beta_c$ — a stricter (lower) $\beta_c$ means less tolerance for backorders.}
+    \caption{Two decisions govern the supplier's operation each period: (RQ1) an \emph{ordering} decision $q_{it}$, placed with an external source under a static base-stock policy (with base-stock level $S_i$ and inventory position $\IP_{it}$, Section~\ref{sec:ip}) and delivered $\tau$ periods later, so that the delivery available for allocation in period $t$ is the order $q_{i,t-\tau}$ placed $\tau$ periods earlier, and (RQ2) an \emph{allocation} decision $a_{cit}$ that dynamically splits available stock across customers $c \in \mathcal{C}$ once demand is realized. Customers differ in demand rate $\lambda_{ci}$ and in their SLA backorder allowance $\beta_c$; a stricter (lower) $\beta_c$ means less tolerance for backorders.}
     \label{fig:problem-setup}
 \end{figure}
 
-Every period, the supplier makes two kinds of decisions, and this paper is concerned with both: (i) how much of each item to \emph{order} to replenish stock, and (ii) how to \emph{allocate} available on-hand stock across customers whenever it is insufficient to cover everyone immediately. Ordering follows a static base-stock policy with a fixed order-up-to level $S_i$ per item, set at the tactical level and held fixed in this paper. Allocation, by contrast, is a dynamic decision made every period: whenever on-hand stock cannot cover all outstanding demand for an item, the supplier must decide which customers to serve first. This is where the model's flexibility lies, and it is needed precisely because customers' SLAs are heterogeneous — some customers can tolerate more backorders than others, and an allocation policy that ignores this wastes stock protecting customers who do not need it, at the expense of customers who do.
+Every period, the supplier makes two kinds of decisions, and this paper is concerned with both: (i) how much of each item to \emph{order} to replenish stock, and (ii) how to \emph{allocate} available on-hand stock across customers whenever it is insufficient to cover everyone immediately. Ordering follows a static base-stock policy with a fixed order-up-to level $S_i$ per item, set at the tactical level and held fixed in this paper. Allocation, by contrast, is a dynamic decision made every period: whenever on-hand stock cannot cover all outstanding demand for an item, the supplier must decide which customers to serve first. This is where the model's flexibility lies, and it is needed precisely because customers' SLAs are heterogeneous: some customers can tolerate more backorders than others, and an allocation policy that ignores this wastes stock protecting customers who do not need it, at the expense of customers who do.
 
-Each customer $c$'s service level is expressed as a numeric backorder allowance $\beta_c \geq 0$: the maximum cumulative backorder units customer $c$ can accumulate across items within a review horizon of $T$ periods before a penalty applies. Concretely, if by the end of a review horizon customer $c$'s cumulative backorders exceed $\beta_c$ by some amount $x$, the supplier pays a penalty of $p_c \cdot x$, where $p_c > 0$ is the per-unit penalty cost (e.g., $\beta_1 = 6$ and $\beta_2 = 8$ units for two customers with different SLA strictness). Because review horizons repeat indefinitely over the supplier's operation, this is a recurring, long-run cost structure rather than a one-off constraint — the same recurring finite-horizon SLA structure studied for a single, aggregate service metric by \citet{temizoz2026ace}; here we instead track backorders per customer under heterogeneous, customer-specific allowances.
+Each customer $c$'s service level is expressed as a numeric backorder allowance $\beta_c \geq 0$ on the backorders that customer $c$ accumulates within a review horizon of $T$ periods. Backorders are counted at the end of each period: in every period of the horizon, the units of all items still owed to customer $c$ after that period's allocation are added to the customer's cumulative backorder, so a unit that is backordered at the end of $k$ periods of the horizon counts $k$ times. Concretely, if by the end of a review horizon customer $c$'s cumulative backorder exceeds $\beta_c$ by some amount $x$, the supplier pays a penalty of $p_c \cdot x$, where $p_c > 0$ is the penalty cost per unit of excess (e.g., $\beta_1 = 6$ and $\beta_2 = 8$ for two customers with different SLA strictness). Because review horizons repeat indefinitely over the supplier's operation, this is a recurring, long-run cost structure rather than a one-off constraint.
 
 \section{Research Questions}
 
 \begin{enumerate}
-    \item[\textbf{RQ1}] \textit{Optimal Base-Stock Levels:} What base-stock levels $\mathbf{S}^* = \{S_i^*\}_{i \in I}$ minimize the supplier's long-run expected cost, subject to the customers' SLA backorder allowances?
+    \item[\textbf{RQ1}] \textit{Optimal Base-Stock Levels:} What base-stock levels $\mathbf{S}^* = (S_i^*)_{i \in I}$ minimize the supplier's long-run expected cost of holding and SLA penalties, given the customers' SLA backorder allowances?
 
-    \item[\textbf{RQ2}] \textit{Optimal Allocation Policy:} Given fixed base-stock levels, what allocation policy $\pi: \mathcal{S} \to \mathcal{A}$ minimizes cost while ensuring that each customer's cumulative backorders respect their SLA allowance?
+    \item[\textbf{RQ2}] \textit{Optimal Allocation Policy:} Given fixed base-stock levels, what allocation policy $\pi$ minimizes the supplier's long-run expected cost, which includes a penalty whenever a customer's cumulative backorders exceed its SLA allowance?
 \end{enumerate}
 
 \section{Model Formulation}
 
 \subsection{Sets, Indices, and Time Notation}
 
+Let $x^+ := \max\{x, 0\}$, and let $\lceil x \rceil$ denote the smallest integer greater than or equal to $x$.
+
 \begin{itemize}
     \item $I$: set of items, indexed $i \in I$, $|I| \geq 1$
-    \item $C$: set of customers, indexed $c \in C$, $|C| \geq 1$
-    \item $t$: current period (absolute time index; $t = 1, 2, 3, \ldots$)
+    \item $\mathcal{C}$: set of customers, indexed $c \in \mathcal{C}$, $|\mathcal{C}| \geq 1$
+    \item $t$: global period index, $t = 1, 2, 3, \ldots$
     \item $T$: review horizon length (number of periods per review horizon; e.g., $T = 20$)
-    \item $r$: review horizon index — period $t$ belongs to horizon $r = r(t) = \lceil t/T \rceil$, which spans periods $(r-1)T+1$ through $rT$
-    \item $L \geq 0$: replenishment lead time (periods between placing and receiving an order)
+    \item $r$: review horizon index; period $t$ belongs to horizon $r = \lceil t/T \rceil$, which spans periods $(r-1)T+1$ through $rT$
+    \item $\tau \geq 1$: replenishment lead time; an order placed in period $t$ arrives in period $t+\tau$
 \end{itemize}
 
-\textbf{Example:} With $T = 20$: periods 1--20 form horizon $r=1$; periods 21--40 form horizon $r=2$; period $t=35$ has $r(35) = \lceil 35/20 \rceil = 2$.
+\textbf{Example:} With $T = 20$: periods 1--20 form horizon $r=1$; periods 21--40 form horizon $r=2$; period $t=35$ belongs to horizon $r = \lceil 35/20 \rceil = 2$.
 
 \subsection{Demand}
 
-Demand for item $i$ from customer $c$ follows a known stochastic demand distribution (e.g., Poisson), independent across periods. Let $D_{c,i}(t) \in \mathbb{Z}_{\geq 0}$ denote the \emph{realized} demand of customer $c$ for item $i$ in period $t$ — a draw from that distribution, observed after the fact. Total demand is obtained by summing over customers (per item) or over items (per customer):
+Demand for item $i$ from customer $c$ follows a known stochastic demand distribution $\mathcal{D}_{ci}$ (e.g., Poisson), i.i.d.\ across periods and independent across customer-item pairs. Let $d_{cit} \sim \mathcal{D}_{ci}$ denote the realized demand of customer $c$ for item $i$ in period $t$, and let $\lambda_{ci} := \mathbb{E}[d_{cit}]$ denote its mean. The total demand for item $i$ and the demand vector of period $t$ are
 \begin{equation}
-    D_i(t) = \sum_{c \in C} D_{c,i}(t), \qquad D_c(t) = \sum_{i \in I} D_{c,i}(t).
+    d_{it} = \sum_{c \in \mathcal{C}} d_{cit}, \qquad \mathbf{d}_t = (d_{cit})_{c \in \mathcal{C},\, i \in I}.
 \end{equation}
 
-\subsection{State Variables}
+\subsection{Order of Events}
+\label{sec:events}
 
-At period $t$, the state $s_t$ includes:
+We describe the order of events in a period $t$ and introduce the corresponding notation; Section~\ref{sec:workflow} states each step formally. At the start of period $t$, the order of item $i$ placed $\tau$ periods earlier, $q_{i,t-\tau}$, arrives and is added to the on-hand inventory. The supplier then reviews its inventory and, following its base-stock policy, places a new order $q_{it} \in \mathbb{Z}_{\geq 0}$ of item $i$ with the external source, which arrives in period $t+\tau$. Next, the demands $d_{cit}$ are observed, so that customer $c$ is owed $b_{cit} + d_{cit}$ units of item $i$, where the backorder $b_{cit} \in \mathbb{Z}_{\geq 0}$ is the number of units of item $i$ still owed to customer $c$ at the beginning of period $t$. The supplier then decides the allocation $a_{cit} \in \mathbb{Z}_{\geq 0}$, the number of units of item $i$ given to customer $c$ in period $t$, and we write $\mathbf{a}_t = (a_{cit})_{c \in \mathcal{C},\, i \in I}$; no customer receives more than it is owed, and the total allocation of an item cannot exceed its on-hand inventory. The $b_{cit} + d_{cit} - a_{cit}$ units still owed after the allocation remain backordered at the end of period $t$ and are carried into period $t+1$. Lastly, the stock left on hand incurs a holding cost of $h_i > 0$ per unit of item $i$, and at the end of each review horizon the supplier pays a penalty of $p_c > 0$ per unit by which customer $c$'s cumulative backorder in the horizon exceeds its allowance $\beta_c$ (Section~\ref{sec:horizonstats}).
+
+\subsection{State Variables}
+\label{sec:state}
+
+The state $\mathbf{s}_t$ describes the system at the allocation decision of period $t$, i.e., after the arriving order has been received, the order of period $t$ has been placed and the demand of period $t$ has been observed. On-hand inventory, pipeline orders and backorders are recorded at the start of period $t$, before the arriving order is received; the order placed in period $t$ is a function of them (Section~\ref{sec:ip}), so it need not be stored separately. The state $\mathbf{s}_t$ includes:
 
 \subsubsection{On-Hand Inventory ($|I|$ features)}
 \begin{equation}
-    \text{OH}_i(t) \in \mathbb{Z}_{\geq 0}, \quad i \in I
+    \OH_{it} \in \mathbb{Z}_{\geq 0}, \quad i \in I
 \end{equation}
-On-hand inventory of item $i$ at the \emph{start} of period $t$: before receiving the order $Q_i(t-L)$ placed $L$ periods ago, and before this period's order $Q_i(t)$ is placed. Once $Q_i(t-L)$ is received in Step 1 of the period workflow below, this becomes the before-allocation quantity $\text{OH}'_i(t)$, defined next.
+On-hand inventory of item $i$ at the \emph{start} of period $t$: before receiving the order $q_{i,t-\tau}$ placed $\tau$ periods ago, and before this period's order $q_{it}$ is placed. Once $q_{i,t-\tau}$ is received in Step~1 of the period workflow below, this becomes the before-allocation quantity $\OH'_{it}$, defined below. On-hand inventory is nonnegative, because backorders are tracked separately per customer.
 
-\subsubsection{Pipeline Orders ($|I| \cdot L$ features)}
-Orders placed in the past $L$ periods, currently in transit:
+\subsubsection{Pipeline Orders ($|I| \cdot \tau$ features)}
+Orders placed in the past $\tau$ periods, not yet received at the start of period $t$:
 \begin{equation}
-    Q_i(t-1), Q_i(t-2), \ldots, Q_i(t-L) \quad \text{for each item } i \in I
+    q_{i,t-1}, q_{i,t-2}, \ldots, q_{i,t-\tau} \quad \text{for each item } i \in I
 \end{equation}
-These arrive in periods $t+1$ through $t+L$, respectively.
+The order $q_{i,t-k}$ arrives in period $t+\tau-k$, $k = 1, \ldots, \tau$: the oldest order $q_{i,t-\tau}$ arrives in Step~1 of period $t$, and the most recent one, $q_{i,t-1}$, in period $t+\tau-1$.
 
-\subsubsection{Backorder per Customer-Item ($|C| \cdot |I|$ features)}
+\subsubsection{Backorder per Customer-Item ($|\mathcal{C}| \cdot |I|$ features)}
 \begin{equation}
-    \text{BO}_{c,i}(t) \in \mathbb{Z}_{\geq 0}, \quad c \in C, \, i \in I
+    b_{cit} \in \mathbb{Z}_{\geq 0}, \quad c \in \mathcal{C}, \, i \in I
 \end{equation}
-Units of item $i$ still owed to customer $c$ from past periods' unmet demand. A value of $\text{BO}_{c,i}(t) = 0$ simply means there are no backorders for that customer-item pair.
+Units of item $i$ owed to customer $c$ at the beginning of period $t$, i.e., unmet demand from periods before $t$. A value of $b_{cit} = 0$ simply means there are no backorders for that customer-item pair. We write $\mathbf{b}_t = (b_{cit})_{c \in \mathcal{C},\, i \in I}$.
 
-\subsubsection{Observed Demand, Current Period ($|C| \cdot |I|$ features)}
+\subsubsection{Observed Demand, Current Period ($|\mathcal{C}| \cdot |I|$ features)}
 \begin{equation}
-    D_{c,i}(t) \in \mathbb{Z}_{\geq 0}, \quad c \in C, \, i \in I
+    d_{cit} \in \mathbb{Z}_{\geq 0}, \quad c \in \mathcal{C}, \, i \in I
 \end{equation}
 as defined above.
 
-\subsubsection{Cumulative Backorder Sum ($|C|$ features)}
-Running sum of each customer's total backorder over the earlier periods of the current review horizon, \emph{not including period $t$ itself}:
+\subsubsection{Review Horizon Statistics ($|\mathcal{C}| + 1$ features)}
+\label{sec:horizonstats}
+We measure performance within the current review horizon $r = \lceil t/T \rceil$ cumulatively from its start. At the end of each period $l$, after its allocation, customer $c$ is still owed $\sum_{i \in I} (b_{cil} + d_{cil} - a_{cil})$ units, its backorder at the end of period $l$. Let $B_{c,t-1}(T)$ and $B_{ct}(T)$ denote customer $c$'s cumulative backorder in horizon $r$, i.e., the sum of these end-of-period backorders over the horizon's periods before $t$, and up to and including $t$, respectively. Let $R_{t-1}(T)$ and $R_t(T)$ denote the corresponding numbers of periods remaining until the end of horizon $r$:
+\begin{align}
+    B_{c,t-1}(T) &= \sum_{l=(r-1)T+1}^{t-1} \sum_{i \in I} \big(b_{cil} + d_{cil} - a_{cil}\big), \\
+    B_{ct}(T) &= B_{c,t-1}(T) + \sum_{i \in I} \big(b_{cit} + d_{cit} - a_{cit}\big), \\
+    R_{t-1}(T) &= rT - t + 1, \qquad R_t(T) = rT - t.
+\end{align}
+All four statistics refer to the horizon $r = \lceil t/T \rceil$ of period $t$. In the first period of a horizon, $t = (r-1)T+1$, the sum is empty, so $B_{c,t-1}(T) = 0$ and $R_{t-1}(T) = T$; the units still owed at the end of the previous horizon's last period were counted in that horizon. In the last period of a horizon, $t = rT$, we have $R_t(T) = 0$. A unit that is backordered at the end of $k$ periods of the horizon contributes $k$ to $B_{ct}(T)$, so cumulative backorders, and the allowances $\beta_c$ below, are measured in unit-periods. The state contains the statistics up to the end of the previous period,
 \begin{equation}
-    \overline{\text{BO}}_c(t) = \sum_{j=(r-1)T+1}^{t-1} \text{BO}_c(j), \qquad r = r(t),
+    \mathbf{P}_t = \big(B_{1,t-1}(T), \ldots, B_{|\mathcal{C}|,t-1}(T), R_{t-1}(T)\big),
 \end{equation}
-where $\text{BO}_c(j) = \sum_{i \in I} \text{BO}_{c,i}(j)$ is customer $c$'s total backorder at the \emph{beginning} of period $j$, i.e., what is owed from earlier periods' unmet demand. The sum is empty, and $\overline{\text{BO}}_c(t) = 0$, in the first period of every review horizon. It resets to 0 at the start of each new review horizon (see the update rule in Step 5 below).
+which are known at the allocation decision of period $t$. The statistic $B_{ct}(T)$ is known only after this decision, because it depends on the allocation $\mathbf{a}_t$. The penalty of a horizon therefore depends on the allocations of all its periods, including the last one. The update of $\mathbf{P}_t$ is given in Step~5 below.
 
-\subsubsection{Time Remaining ($1$ feature)}
+\subsubsection{SLA Backorder Allowance per Customer ($|\mathcal{C}|$ features)}
 \begin{equation}
-    T_{\text{rem}}(t) = r(t) \cdot T - t
+    \beta_c \geq 0, \quad c \in \mathcal{C}
 \end{equation}
+Maximum cumulative backorder, in unit-periods, tolerated for customer $c$ per review horizon; a penalty is charged at the end of horizon $r$ if $B_{c,rT}(T) > \beta_c$, i.e., if the backorders at the end of the horizon's $T$ periods sum to more than $\beta_c$.
 
-\subsubsection{SLA Backorder Allowance per Customer ($|C|$ features)}
+\textbf{Total state dimension:} The state is $\mathbf{s}_t = \big((\OH_{it}, q_{i,t-1}, \ldots, q_{i,t-\tau})_{i \in I}, \mathbf{b}_t, \mathbf{d}_t, \mathbf{P}_t, \boldsymbol{\beta}\big)$ with $\boldsymbol{\beta} = (\beta_c)_{c \in \mathcal{C}}$, so
 \begin{equation}
-    \beta_c \geq 0, \quad c \in C
-\end{equation}
-Maximum cumulative backorder units tolerated for customer $c$ per review horizon; a penalty is charged if $\overline{\text{BO}}_c(rT) + \text{BO}_c(rT) > \beta_c$ at horizon end, i.e., if the backorders at the beginning of the horizon's periods sum to more than $\beta_c$.
-
-\textbf{Total state dimension:}
-\begin{equation}
-    |\mathcal{S}| = |I| + |I| \cdot L + |C|\cdot|I| + |C|\cdot|I| + |C| + 1 + |C|
+    \dim(\mathbf{s}_t) = |I| + |I| \cdot \tau + |\mathcal{C}|\cdot|I| + |\mathcal{C}|\cdot|I| + |\mathcal{C}| + 1 + |\mathcal{C}|.
 \end{equation}
 
 \subsection{On-Hand Inventory Before Allocation}
 
 Once this period's arriving order has been received, on-hand inventory before allocation is
 \begin{equation}
-    \text{OH}'_i(t) = \text{OH}_i(t) + Q_i(t-L), \quad i \in I.
+    \OH'_{it} = \OH_{it} + q_{i,t-\tau}, \quad i \in I.
 \end{equation}
-This is the available supply for item $i$ this period — after the order $Q_i(t-L)$ has arrived but before this period's allocation is made. It is not an independent piece of state: it is fully determined by $\text{OH}_i(t)$ and the pipeline order $Q_i(t-L)$, both already part of the state. It is given its own symbol because it recurs throughout the rest of the model — in the inventory position below, in the allocation feasibility bound, and in Step 1 of the period workflow — and writing $\text{OH}_i(t) + Q_i(t-L)$ out in full each time would obscure that it is the same quantity every time.
+This is the available supply for item $i$ this period: after the order $q_{i,t-\tau}$ has arrived but before this period's allocation is made. It is not an independent piece of state: it is fully determined by $\OH_{it}$ and the pipeline order $q_{i,t-\tau}$, both already part of the state. It is given its own symbol because it recurs throughout the rest of the model, in the inventory position below, in the allocation feasibility bound, in Step~1 of the period workflow and in the holding cost, and writing $\OH_{it} + q_{i,t-\tau}$ out in full each time would obscure that it is the same quantity every time.
 
 \subsection{Inventory Position}
+\label{sec:ip}
 
-Ordering follows a base-stock policy, and a base-stock policy needs to know not just on-hand stock, but everything already committed to arrive and everything already owed to customers. This combined quantity is the inventory position — it would not be needed at all under a different ordering policy, but it is needed here specifically because ordering is base-stock:
+Ordering follows a base-stock policy, and a base-stock policy needs to know not just on-hand stock, but everything already committed to arrive and everything already owed to customers. This combined quantity is the inventory position, and it is needed here because ordering is base-stock:
 \begin{equation}
-    \text{IP}_i(t) = \text{OH}'_i(t) + \sum_{j=t-L+1}^{t-1} Q_i(j) - \sum_{c \in C} \text{BO}_{c,i}(t)
+    \IP_{it} = \OH'_{it} + \sum_{j=t-\tau+1}^{t-1} q_{ij} - \sum_{c \in \mathcal{C}} b_{cit},
 \end{equation}
-i.e., on-hand inventory including this period's arriving order ($\text{OH}'_i(t)$), plus the remaining $L-1$ orders still in the pipeline (from the one placed two periods ago through the one placed yesterday, $Q_i(t-L+1), \ldots, Q_i(t-1)$), minus outstanding backorders across all customers. This is the same quantity as $\text{OH}_i(t) + \sum_{j=t-L}^{t-1} Q_i(j) - \sum_{c \in C} \text{BO}_{c,i}(t)$ — written via $\text{OH}'_i(t)$ because that quantity already has to be computed anyway (see above), not because a different set of orders is being counted.
+i.e., on-hand inventory including this period's arriving order ($\OH'_{it}$), plus the remaining $\tau-1$ orders still in the pipeline ($q_{i,t-\tau+1}, \ldots, q_{i,t-1}$, placed $\tau-1$ periods ago through one period ago), minus outstanding backorders across all customers. For $\tau = 1$ the sum is empty. This is the same quantity as $\OH_{it} + \sum_{j=t-\tau}^{t-1} q_{ij} - \sum_{c \in \mathcal{C}} b_{cit}$, written via $\OH'_{it}$ because that quantity already has to be computed anyway (see above), not because a different set of orders is being counted.
 
 \subsection{Decisions Each Period}
 
 \subsubsection{Ordering Decision (static)}
 \begin{equation}
-    Q_i(t) = \max(0, S_i - \text{IP}_i(t)), \quad i \in I,
+    q_{it} = (S_i - \IP_{it})^+, \quad i \in I,
 \end{equation}
-where $S_i$ is the fixed base-stock level for item $i$. This order is placed in period $t$ and arrives in period $t+L$.
+where $S_i$ is the fixed base-stock level for item $i$ and $\mathbf{S} = (S_1, \ldots, S_{|I|}) \in \mathbb{N}_0^{|I|}$. This order is placed in period $t$ and arrives in period $t+\tau$.
 
 \subsubsection{Allocation Decision (dynamic)}
-After demand is realized, an allocation policy $\pi(s_t)$ chooses, for each customer $c$ and item $i$:
+After demand is realized, an allocation policy $\pi$ chooses the action $\mathbf{a}_t = \pi(\mathbf{s}_t) = (a_{cit})_{c \in \mathcal{C},\, i \in I}$, where $a_{cit}$ is the number of units of item $i$ allocated to customer $c$ in period $t$, from the set of feasible allocations
 \begin{equation}
-    A_{c,i}(t) = \pi_{c,i}(s_t), \qquad \text{subject to} \qquad \sum_{c \in C} A_{c,i}(t) \leq \text{OH}'_i(t),
+    \mathcal{A}(\mathbf{s}_t) = \Big\{ \mathbf{a} = (a_{ci}) \in \mathbb{Z}_{\geq 0}^{|\mathcal{C}| \times |I|} \;:\; a_{ci} \leq b_{cit} + d_{cit} \ \ \forall c \in \mathcal{C},\, i \in I, \quad \sum_{c \in \mathcal{C}} a_{ci} \leq \OH'_{it} \ \ \forall i \in I \Big\},
 \end{equation}
-i.e., total allocation of item $i$ cannot exceed the available supply $\text{OH}'_i(t)$ once this period's order has arrived. The policy can use any information in $s_t$, and may allocate less than what is available (a strategic hold) even when demand could be fully covered.
+i.e., no customer receives more of item $i$ than it is owed, and the total allocation of item $i$ cannot exceed the available supply $\OH'_{it}$ once this period's order has arrived. The first bound keeps backorders nonnegative. The policy can use any information in $\mathbf{s}_t$, and may allocate less than what is available (a strategic hold) even when demand could be fully covered.
 
 \newpage
 \section{Period Workflow}
+\label{sec:workflow}
 
 Each period $t$ executes the following steps in order.
 
 \subsection{Step 1: Receive Orders}
-The order $Q_i(t-L)$ placed $L$ periods ago arrives, becoming available alongside existing on-hand stock: $\text{OH}'_i(t) = \text{OH}_i(t) + Q_i(t-L)$, as defined above.
+The order $q_{i,t-\tau}$ placed $\tau$ periods ago arrives, becoming available alongside existing on-hand stock: $\OH'_{it} = \OH_{it} + q_{i,t-\tau}$, as defined above.
 
 \subsection{Step 2: Compute Inventory Position and Place New Order}
-$\text{IP}_i(t)$ is computed as defined above, and the new order $Q_i(t) = \max(0, S_i - \text{IP}_i(t))$ is placed (it will arrive in period $t+L$).
+$\IP_{it}$ is computed as defined above, and the new order $q_{it} = (S_i - \IP_{it})^+$ is placed (it will arrive in period $t+\tau$).
 
 \subsection{Step 3: Observe Demand}
-Demands $D_{c,i}(t)$ are realized for each customer-item pair; total item demand $D_i(t)$ is as defined above.
+Demands $d_{cit}$ are realized for each customer-item pair; total item demand $d_{it}$ is as defined above.
 
 \subsection{Step 4: Allocate Using Policy}
-For each item $i$, the allocation policy $\pi(s_t)$ chooses $A_{c,i}(t)$ for each customer $c$, subject to
-\begin{equation}
-    \sum_{c \in C} A_{c,i}(t) \leq \text{OH}'_i(t).
-\end{equation}
-The policy weighs backlog and new demand together — what is owed to customer $c$ for item $i$ is $\text{BO}_{c,i}(t) + D_{c,i}(t)$ — and decides how to split available stock across customers. If available supply covers everyone's backlog and new demand combined, the policy typically allocates in full, but it is not required to: the only hard constraint is the availability bound above.
+For each item $i$, the allocation policy $\pi$ chooses $a_{cit}$ for each customer $c$, subject to $\mathbf{a}_t \in \mathcal{A}(\mathbf{s}_t)$. The policy weighs backlog and new demand together: what is owed to customer $c$ for item $i$ is $b_{cit} + d_{cit}$, and the policy decides how to split available stock across customers. If available supply covers everyone's backlog and new demand combined, the policy typically allocates in full, but it is not required to: the only hard constraints are the two bounds of $\mathcal{A}(\mathbf{s}_t)$.
 
 \subsection{Step 5: Update State Variables}
+\label{sec:update}
 
 \textbf{On-hand inventory:}
 \begin{equation}
-    \text{OH}_i(t+1) = \text{OH}'_i(t) - \sum_{c \in C} A_{c,i}(t)
+    \OH_{i,t+1} = \OH'_{it} - \sum_{c \in \mathcal{C}} a_{cit}
 \end{equation}
-This is on-hand inventory at the start of period $t+1$ — before receiving $Q_i(t+1-L)$ and before placing $Q_i(t+1)$ — consistent with the definition of $\text{OH}_i(t)$ above. Since allocation is always bounded by available supply, on-hand inventory never goes negative; unmet demand is tracked separately as backorder.
+This is on-hand inventory at the start of period $t+1$, before receiving $q_{i,t+1-\tau}$ and before placing $q_{i,t+1}$, consistent with the definition of $\OH_{it}$ above. Since allocation is always bounded by available supply, on-hand inventory never goes negative; unmet demand is tracked separately as backorder.
+
+\textbf{Pipeline orders:} The order $q_{it}$ placed in Step~2 joins the pipeline and the received order $q_{i,t-\tau}$ leaves it, so the pipeline of period $t+1$ consists of $q_{it}, \ldots, q_{i,t+1-\tau}$.
 
 \textbf{Backorder per customer-item:}
 \begin{equation}
-    \text{BO}_{c,i}(t+1) = \text{BO}_{c,i}(t) + D_{c,i}(t) - A_{c,i}(t)
+    b_{ci,t+1} = b_{cit} + d_{cit} - a_{cit}
 \end{equation}
-Unmet demand becomes backorder carried into the next period.
+Unmet demand remains backordered at the end of period $t$ and is carried into period $t+1$; the bound $a_{cit} \leq b_{cit} + d_{cit}$ ensures $b_{ci,t+1} \geq 0$.
 
-\textbf{Aggregate backorder per customer:}
+\textbf{Review horizon statistics:}
 \begin{equation}
-    \text{BO}_c(t+1) = \sum_{i \in I} \text{BO}_{c,i}(t+1)
-\end{equation}
-
-\textbf{Cumulative backorder sum:}
-\begin{equation}
-    \overline{\text{BO}}_c(t+1) = \begin{cases}
-        \overline{\text{BO}}_c(t) + \text{BO}_c(t) & \text{if } t < r(t) \cdot T \quad \text{(still inside the same horizon)} \\
-        0 & \text{if } t = r(t) \cdot T \quad \text{(period $t+1$ starts a new horizon)}
+    \mathbf{P}_{t+1} = \begin{cases}
+        \big(B_{1t}(T), \ldots, B_{|\mathcal{C}|t}(T), R_t(T)\big) & \text{if } R_t(T) > 0 \quad \text{(period $t+1$ is in the same horizon)} \\
+        (0, \ldots, 0, T) & \text{if } R_t(T) = 0 \quad \text{(period $t+1$ starts a new horizon)}
     \end{cases}
 \end{equation}
-Individual backorders $\text{BO}_{c,i}(t+1)$ persist across horizon boundaries — only the cumulative sum $\overline{\text{BO}}_c$ restarts, at 0. Period $t+1$'s own backorder is not part of $\overline{\text{BO}}_c(t+1)$; it enters the sum at the next period, as $\text{BO}_c(t+1)$. In particular, the backorder created by the last period of a horizon is carried over and counts towards the next horizon, as the backorder at the beginning of that horizon's first period.
+Individual backorders persist across horizon boundaries; only the horizon statistics restart. The units still owed at the end of period $t$, which are carried into period $t+1$ as backorders, are counted in $B_{ct}(T)$, and hence in $\mathbf{P}_{t+1}$ if period $t+1$ belongs to the same horizon. In particular, the units still owed at the end of a horizon's last period count towards that horizon; units still owed at the end of periods of the next horizon count again there.
 
-\textbf{Time remaining:}
-\begin{equation}
-    T_{\text{rem}}(t+1) = \begin{cases}
-        T_{\text{rem}}(t) - 1 & \text{if } t < r(t) \cdot T \\
-        T & \text{if } t = r(t) \cdot T
-    \end{cases}
-\end{equation}
+The state $\mathbf{s}_{t+1}$ is complete once the demand $\mathbf{d}_{t+1}$ of period $t+1$ has been observed in Step~3 of period $t+1$.
 
 \subsection{Step 6: Calculate Cost}
+\label{sec:cost}
 
-All costs are computed at period end, based on the state after allocation.
-
-\textbf{Holding cost (every period):}
+The excess backorder of customer $c$ in period $t$ is
 \begin{equation}
-    C_{\text{hold}}(t) = \sum_{i \in I} h_i \cdot \text{OH}_i(t+1)
-\end{equation}
-charged on inventory remaining \emph{after} this period's allocation, i.e., what is left once this period's demand has been served.
-
-\textbf{SLA penalty (at horizon end only):}
-\begin{equation}
-    C_{\text{penalty}}(t) = \begin{cases}
-        \sum_{c \in C} p_c \cdot \max\!\Big(0,\; \underbrace{\overline{\text{BO}}_c(t)}_{\text{earlier periods this horizon}} + \underbrace{\text{BO}_c(t)}_{\text{beginning of this period}} - \; \beta_c\Big) & \text{if } T_{\text{rem}}(t) = 0 \text{ (end of horizon)} \\
-        0 & \text{otherwise}
+    \eta_{ct}(\beta_c, T) = \begin{cases}
+        \big(B_{ct}(T) - \beta_c\big)^+ & \text{if } R_t(T) = 0 \text{ (end of horizon)}, \\
+        0 & \text{if } R_t(T) > 0.
     \end{cases}
 \end{equation}
-$\overline{\text{BO}}_c(t)$ sums the backorder at the beginning of the horizon's periods up to but not including $t$; adding $\text{BO}_c(t)$ explicitly folds in the backorder at the beginning of the horizon's last period, so that the penalty covers the backorder at the beginning of every period of the horizon. The backorder created by the last period's own allocation, $\text{BO}_c(t+1)$, is not charged in this horizon; it is the beginning-of-period backorder of the next horizon's first period.
-
-\textbf{Total period cost:}
+The cost of period $t$ consists of the holding cost and the SLA penalty:
 \begin{equation}
-    C(t) = C_{\text{hold}}(t) + C_{\text{penalty}}(t)
+    C(\mathbf{s}_t, \mathbf{a}_t) = \sum_{i \in I} h_i \Big(\OH'_{it} - \sum_{c \in \mathcal{C}} a_{cit}\Big) + \sum_{c \in \mathcal{C}} p_c \, \eta_{ct}(\beta_c, T).
 \end{equation}
+The holding cost is charged every period on the inventory remaining \emph{after} this period's allocation, $\OH'_{it} - \sum_{c} a_{cit}$, i.e., what is left once this period's demand has been served. The SLA penalty is charged only at the end of a horizon. There, $B_{ct}(T)$ adds the units still owed after the horizon's last period to those still owed after its earlier periods, so the penalty covers the backorder at the end of every period of the horizon, including the outcome of the last period's allocation:
+\begin{equation}
+    B_{c,rT}(T) = \sum_{l=(r-1)T+1}^{rT} \sum_{i \in I} \big(b_{cil} + d_{cil} - a_{cil}\big).
+\end{equation}
+Because the demand of period $t$ is part of $\mathbf{s}_t$, the cost depends on the state and the action only.
 
-\textbf{Parameters:} $h_i > 0$ holding cost per unit of item $i$; $p_c > 0$ penalty cost per unit of excess backorder for customer $c$; $\beta_c \geq 0$ backorder allowance for customer $c$ per review horizon.
+\textbf{Parameters:} $h_i > 0$ holding cost per unit of item $i$ per period; $p_c > 0$ penalty cost per unit of excess backorder for customer $c$; $\beta_c \geq 0$ backorder allowance for customer $c$ per review horizon, in unit-periods.
 
 \newpage
 \section{Objective Function}
 \label{sec:objective}
 
-Because review horizons repeat indefinitely over the supplier's operation, the allocation policy is not chosen to minimize the cost of any single horizon — it is chosen to minimize the long-run cost \emph{per period}, taken over all horizons as time goes to infinity. This is the standard average-cost criterion for a recurring MDP \citep{temizoz2025dcl}, applied here across successive review horizons in the spirit of \citet{temizoz2026ace}:
+Because review horizons repeat indefinitely over the supplier's operation, the allocation policy is not chosen to minimize the cost of any single horizon; it is chosen to minimize the long-run cost \emph{per period}, taken over all horizons as time goes to infinity. This is the standard average-cost criterion for a recurring MDP \citep{temizoz2025dcl}. The MDP has the states $\mathbf{s}_t$ of Section~\ref{sec:state}, the actions $\mathbf{a}_t \in \mathcal{A}(\mathbf{s}_t)$, the transition of Step~5 with demands drawn from $\mathcal{D}_{ci}$, the cost $C(\mathbf{s}_t, \mathbf{a}_t)$ of Step~6, and the initial state $\mathbf{s}_1$ below. An allocation policy $\pi$ maps each state to a feasible allocation, $\pi(\mathbf{s}_t) \in \mathcal{A}(\mathbf{s}_t)$, and the optimal allocation policy $\pi^*$ minimizes the long-run average cost:
 \begin{equation}
-    \min_{\pi} \; \limsup_{T' \to \infty} \frac{1}{T'} \, \mathbb{E}\left[\sum_{t=1}^{T'} C(t) \,\middle|\, s_0\right]
+    \pi^* = \arg\min_{\pi} \bar{C}^{\pi}, \qquad \text{with} \qquad \bar{C}^{\pi} = \limsup_{N \to \infty} \frac{1}{N} \, \mathbb{E}\left[\sum_{t=1}^{N} C\big(\mathbf{s}_t, \mathbf{a}_t = \pi(\mathbf{s}_t)\big)\right],
 \end{equation}
-where the expectation is over stochastic demand realizations $D_{c,i}(t)$, $\pi: \mathcal{S} \to \mathbb{R}^{|C| \times |I|}$ is the allocation policy determining $A_{c,i}(t)$ each period, and $C(t)$ is the total period cost defined in Step 6 above (holding cost every period, plus an SLA penalty at the end of each review horizon).
+where the expectation is over the demand realizations $d_{cit}$.
+
+\textbf{Initial state:} Each item $i$ starts with on-hand inventory $\OH_{i1} = S_i$ and an empty pipeline, $q_{i,1-k} = 0$ for $k = 1, \ldots, \tau$; there are no backorders, $b_{ci1} = 0$; and period 1 starts a review horizon, so $\mathbf{P}_1 = (0, \ldots, 0, T)$.
 
 \textbf{Note:} The base-stock levels $S_i$ are fixed; only the allocation policy $\pi$ is subject to optimization here.
 
 \section{Policy Learning Methodology (Future Work)}
 
-The allocation policy $\pi(s_t)$ can be learned via various approaches (e.g., Deep Controlled Learning \citep{temizoz2025dcl}, reinforcement learning at industrial scale \citep{vanderhaar2026asml}, stochastic optimization). Such methodology is independent of the model formulation and will be addressed in separate research. This document provides the formal model; policy optimization is orthogonal to the model's correctness.
+The allocation policy $\pi$ can be learned via various approaches (e.g., Deep Controlled Learning \citep{temizoz2025dcl}, reinforcement learning at industrial scale \citep{vanderhaar2026asml}, stochastic optimization). Such methodology is independent of the model formulation and will be addressed in separate research. This document provides the formal model; policy optimization is orthogonal to the model's correctness.
 
 \section{Numerical Results}
 \label{sec:results}
+% TODO: the table below was produced with an earlier implementation (cost-greedy projection that
+% only counted entering backorders on the other items, and a network input without the allocation-
+% progress blocks). Rerun compare_baselines.py and train_and_compare.py before submission.
 
 This section reports a first numerical study of the allocation decision (RQ2). The base-stock levels $S_i$ are held fixed and identical across items throughout, so any cost difference between policies is due to the allocation policy alone. Optimizing $\mathbf{S}$ (RQ1) is left for a later stage.
 
 \subsection{Instance}
 
-We use $|C| = 2$ customers and $|I| = 3$ items, with lead time $L = 2$ and the same review horizon $T = 20$ for both customers. Demand is Poisson, independent across periods and across customer-item pairs. Table~\ref{tab:instance} lists the parameters. The base-stock level $S_i = 6$ is the same for every item. It is deliberately tight relative to demand, so that stock is frequently scarce and the allocation decision matters.
+We use $|\mathcal{C}| = 2$ customers and $|I| = 3$ items, with lead time $\tau = 2$ and the same review horizon $T = 20$ for both customers. Demand is Poisson, independent across periods and across customer-item pairs. Table~\ref{tab:instance} lists the parameters. The base-stock level $S_i = 6$ is the same for every item. It is deliberately tight relative to demand, so that stock is frequently scarce and the allocation decision matters.
 
 \begin{table}[H]
     \centering
@@ -377,8 +378,8 @@ We use $|C| = 2$ customers and $|I| = 3$ items, with lead time $L = 2$ and the s
         \midrule
         Holding cost $h_i$ & 1.0 & 0.8 & 1.2 \\
         Base-stock level $S_i$ & 6 & 6 & 6 \\
-        Demand rate $\lambda_{1,i}$ (customer 1) & 1.0 & 0.8 & 0.5 \\
-        Demand rate $\lambda_{2,i}$ (customer 2) & 0.7 & 1.2 & 0.6 \\
+        Demand rate $\lambda_{1i}$ (customer 1) & 1.0 & 0.8 & 0.5 \\
+        Demand rate $\lambda_{2i}$ (customer 2) & 0.7 & 1.2 & 0.6 \\
         \bottomrule
     \end{tabular}
 
@@ -397,21 +398,152 @@ We use $|C| = 2$ customers and $|I| = 3$ items, with lead time $L = 2$ and the s
 
 \subsection{Allocation Policies}
 
-The allocation $A_{c,i}(t)$ is built one unit at a time: whenever stock of item $i$ is scarce, the policy is asked, once per available unit, to which customer that unit goes, or whether to hold it. The resulting allocation is the tally of these choices and covers every feasible allocation satisfying $\sum_{c} A_{c,i}(t) \leq \text{OH}'_i(t)$ and $A_{c,i}(t) \leq \text{BO}_{c,i}(t) + D_{c,i}(t)$. When available supply covers everything owed for an item, it is allocated in full without consulting the policy, which is never worse under the cost structure of Step~6. The paper prescribes no particular allocation policy, so we compare four rule-based benchmarks with a policy learned by Deep Controlled Learning (DCL) \citep{temizoz2025dcl}.
+The allocation $\mathbf{a}_t$ is built one unit at a time: whenever stock of item $i$ is scarce, i.e., $\sum_{c} (b_{cit} + d_{cit}) > \OH'_{it}$, the policy is asked, once per available unit, to which customer that unit goes, or whether to hold it. In such periods the resulting allocation is the tally of these choices, and every feasible allocation in $\mathcal{A}(\mathbf{s}_t)$ can be built this way. When available supply covers everything owed for an item, it is allocated in full without consulting the policy. This restricts the experiments to policies that allocate in full whenever supply covers everything owed. The restriction is not without loss of optimality in general: holding a unit that could serve one customer now can pay off when it is reserved for a customer that is close to its allowance. The paper prescribes no particular allocation policy, so we compare four rule-based benchmarks with a policy learned by Deep Controlled Learning (DCL) \citep{temizoz2025dcl}.
 
 \begin{itemize}
     \item \textbf{FCFS:} serves the lowest-indexed customer that is still owed a unit.
-    \item \textbf{SLA-gap:} serves the customer whose cumulative backorder $\overline{\text{BO}}_c$ exceeds its allowance $\beta_c$ by the most (or falls short of it by the least).
-    \item \textbf{Cost-greedy:} serves the customer that would, if the unit were withheld, be projected to exceed $\beta_c$ with the highest penalty $p_c$.
-    \item \textbf{Greedy-dynamic:} uses cost-greedy once any customer exceeds its allowance, SLA-gap once any customer has used more than $80\%$ of its allowance, and FCFS otherwise.
+    \item \textbf{SLA-gap:} serves the customer whose cumulative backorder $B_{c,t-1}(T)$ exceeds its allowance $\beta_c$ by the most (or falls short of it by the least).
+    \item \textbf{Cost-greedy:} serves the customer that would, if the unit were withheld, be projected to exceed $\beta_c$ with the highest penalty $p_c$ (projection $\widehat{B}_c = B_{c,t-1}(T) + o_c + w_c$, Algorithm~\ref{alg:cost}).
+    \item \textbf{Greedy-dynamic:} uses cost-greedy once $B_{c,t-1}(T) > \beta_c$ for some customer, SLA-gap once $B_{c,t-1}(T) > 0.8\,\beta_c$ for some customer, and FCFS otherwise.
     \item \textbf{DCL:} a neural network that classifies the best allocation decision from the state. Training starts from greedy-dynamic, labels sampled states with the best action found by simulated lookahead, and repeats for three generations, each generation rolling out the previous one.
 \end{itemize}
 
+\subsection{Pseudocode of the Benchmark Policies}
+\label{sec:policies}
+
+The four rule-based policies are rules for the unit decision described above. Fix a period $t$ and an item $i$ whose stock is scarce. At the moment of a decision, let $o_c$ denote the number of units of item $i$ that customer $c$ is still owed: initially $o_c = b_{cit} + d_{cit}$, and $o_c$ decreases by one each time a unit is given to $c$. Let $E = \{c \in \mathcal{C} : o_c > 0\}$ be the set of customers that can still receive a unit; it is nonempty whenever a decision is asked. For the cost-greedy rule we also need the number of units customer $c$ is still owed on the other items, given the allocation decided so far in period $t$,
+\begin{equation}
+    w_c = \sum_{j \in I \setminus \{i\}} \big(b_{cjt} + d_{cjt} - a_{cjt}\big),
+\end{equation}
+where $a_{cjt}$ is zero for an item $j$ that has not been allocated yet. Every rule returns one customer of $E$, breaks ties in favor of the lowest customer index, and never holds a unit back. All rules use the cumulative backorder $B_{c,t-1}(T)$ of the state, and none of them looks ahead beyond the current period. Algorithm~\ref{alg:period} shows how a rule $\rho$ is used in Step~4 of every period, and Algorithms~\ref{alg:fcfs} to~\ref{alg:dynamic} define the four rules.
+
+\begin{algorithm}[H]
+\caption{Allocation in period $t$ with a unit rule $\rho$ (Step 4)}
+\label{alg:period}
+\begin{algorithmic}[1]
+\Require state $\mathbf{s}_t$ with the demand $\mathbf{d}_t$ observed; unit rule $\rho$ (Algorithm~\ref{alg:fcfs}, \ref{alg:gap}, \ref{alg:cost} or \ref{alg:dynamic})
+\Ensure allocation $\mathbf{a}_t \in \mathcal{A}(\mathbf{s}_t)$
+\For{each item $i \in I$}
+    \State $\OH'_{it} \gets \OH_{it} + q_{i,t-\tau}$
+    \State $o_c \gets b_{cit} + d_{cit}$ and $a_{cit} \gets 0$ for all $c \in \mathcal{C}$
+    \If{$\sum_{c \in \mathcal{C}} o_c \leq \OH'_{it}$}
+        \State $a_{cit} \gets o_c$ for all $c \in \mathcal{C}$ \Comment{stock covers everything owed: no decision}
+    \Else
+        \For{$u = 1, \ldots, \OH'_{it}$} \Comment{one decision per available unit}
+            \If{$o_c = 0$ for all $c \in \mathcal{C}$}
+                \State \textbf{break}
+            \EndIf
+            \State $c^{*} \gets \rho$ \Comment{customer that receives this unit}
+            \State $a_{c^{*}it} \gets a_{c^{*}it} + 1$ and $o_{c^{*}} \gets o_{c^{*}} - 1$
+        \EndFor
+    \EndIf
+\EndFor
+\State \Return $\mathbf{a}_t = (a_{cit})_{c \in \mathcal{C},\, i \in I}$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{FCFS rule}
+\label{alg:fcfs}
+\begin{algorithmic}[1]
+\Require remaining owed units $o_c$ for all $c \in \mathcal{C}$
+\State $E \gets \{c \in \mathcal{C} : o_c > 0\}$
+\State \Return $\min E$ \Comment{lowest customer index}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{SLA-gap rule}
+\label{alg:gap}
+\begin{algorithmic}[1]
+\Require remaining owed units $o_c$, cumulative backorders $B_{c,t-1}(T)$ and allowances $\beta_c$
+\State $E \gets \{c \in \mathcal{C} : o_c > 0\}$
+\For{each $c \in E$}
+    \State $g_c \gets B_{c,t-1}(T) - \beta_c$ \Comment{gap to the allowance; positive means already above it}
+\EndFor
+\State \Return $\arg\max_{c \in E} g_c$ \Comment{ties: lowest index}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{Cost-greedy rule}
+\label{alg:cost}
+\begin{algorithmic}[1]
+\Require remaining owed units $o_c$, units owed on other items $w_c$, $B_{c,t-1}(T)$, allowances $\beta_c$, penalty costs $p_c$
+\State $E \gets \{c \in \mathcal{C} : o_c > 0\}$
+\For{each $c \in E$}
+    \State $\widehat{B}_c \gets B_{c,t-1}(T) + o_c + w_c$ \Comment{cumulative backorder if no further unit reaches $c$ this period}
+    \If{$\widehat{B}_c > \beta_c$}
+        \State $\pi_c \gets p_c$ \Comment{$c$ is projected to pay a penalty}
+    \Else
+        \State $\pi_c \gets 0$
+    \EndIf
+\EndFor
+\State \Return $\arg\max_{c \in E} \pi_c$ \Comment{ties: lowest index; if all $\pi_c = 0$ this is FCFS}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{Greedy-dynamic rule}
+\label{alg:dynamic}
+\begin{algorithmic}[1]
+\Require $B_{c,t-1}(T)$ and $\beta_c$ for all $c \in \mathcal{C}$, plus the inputs of the three rules above
+\If{$B_{c,t-1}(T) > \beta_c$ for some $c \in \mathcal{C}$}
+    \State \Return cost-greedy rule (Algorithm~\ref{alg:cost})
+\ElsIf{$B_{c,t-1}(T) > 0.8\,\beta_c$ for some $c \in \mathcal{C}$}
+    \State \Return SLA-gap rule (Algorithm~\ref{alg:gap})
+\Else
+    \State \Return FCFS rule (Algorithm~\ref{alg:fcfs})
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Example.} Consider one item and three customers in the last period of a review horizon ($R_{t-1}(T) = 1$), with $\OH'_{it} = 2$ units of stock and the data of Table~\ref{tab:decision-example}. The customers are owed $o = (2, 3, 2)$ units in total, so the stock is scarce and two unit decisions are made. There are no other items, so $w_c = 0$. The rules choose as follows.
+\begin{itemize}
+    \item \textbf{FCFS} gives both units to customer A, the lowest index, although A is far from its allowance ($B_{A,t-1} = 2$ against $\beta_A = 6$).
+    \item \textbf{SLA-gap} has the gaps $g = (-4, -1, +1)$ and gives both units to customer C, whose cumulative backorder is already above its allowance.
+    \item \textbf{Cost-greedy} computes $\widehat{B} = (4, 8, 10)$ and compares them with $\beta = (6, 6, 7)$: customers B and C are projected to pay a penalty, A is not. It picks B, the one with the higher penalty cost ($p_B = 40 > p_C = 15$), for both units; after the first unit B is still projected above its allowance ($5 + 2 = 7 > 6$), so B also gets the second.
+    \item \textbf{Greedy-dynamic} finds $B_{C,t-1} = 8 > \beta_C = 7$, so it applies the cost-greedy rule and gives the same allocation.
+\end{itemize}
+Because this is the last period of the horizon, the penalty follows from $B_{ct}(T) = B_{c,t-1}(T) + e_{ct}$ with the end-of-period backorders $e_{ct} = o_c - a_{c}$ (Table~\ref{tab:decision-example}). Cost-greedy leaves the least excess where it is most expensive and costs 45, against 95 for SLA-gap and 125 for FCFS. The ranking is specific to this state: the rules are heuristics and need not rank the same way in other states. Cost-greedy also ignores that a unit withheld now stays backordered, and is counted again, in each remaining period of the horizon, which matters when the horizon does not end in period $t$. The switching of greedy-dynamic works the same way on other data: with $\beta = (6, 6, 7)$, the cumulative backorders $B_{t-1} = (2, 5, 3)$ trigger the SLA-gap rule (customer B has $5 > 0.8 \cdot 6 = 4.8$ and nobody is above an allowance), and $B_{t-1} = (2, 3, 3)$ triggers FCFS.
+
+\begin{table}[H]
+    \centering
+    \caption{Decision example: one item, $\OH'_{it} = 2$, last period of the horizon. The top block is the data, the bottom block the outcome of each rule. $a_c$ is the allocation, $e_c = o_c - a_c$ the end-of-period backorder, $B_{ct}(T)$ the cumulative backorder at the end of the horizon, and the penalty is $\sum_c p_c (B_{ct}(T) - \beta_c)^+$.}
+    \label{tab:decision-example}
+    \begin{tabular}{lccc}
+        \toprule
+        & A & B & C \\
+        \midrule
+        Owed $o_c = b_{cit} + d_{cit}$ & 2 & 3 & 2 \\
+        Cumulative backorder $B_{c,t-1}(T)$ & 2 & 5 & 8 \\
+        Allowance $\beta_c$ & 6 & 6 & 7 \\
+        Penalty cost $p_c$ & 10 & 40 & 15 \\
+        Gap $g_c = B_{c,t-1}(T) - \beta_c$ & $-4$ & $-1$ & $+1$ \\
+        Projection $\widehat{B}_c = B_{c,t-1}(T) + o_c$ & 4 & 8 & 10 \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Outcome}} \\
+        FCFS: allocation $a_c$ & 2 & 0 & 0 \\
+        \quad $e_c$, \ $B_{ct}(T)$ & 0, 2 & 3, 8 & 2, 10 \\
+        \quad excess $(B_{ct}(T) - \beta_c)^+$ & 0 & 2 & 3 \\
+        \quad penalty & \multicolumn{3}{c}{$40 \cdot 2 + 15 \cdot 3 = 125$} \\
+        SLA-gap: allocation $a_c$ & 0 & 0 & 2 \\
+        \quad $e_c$, \ $B_{ct}(T)$ & 2, 4 & 3, 8 & 0, 8 \\
+        \quad excess & 0 & 2 & 1 \\
+        \quad penalty & \multicolumn{3}{c}{$40 \cdot 2 + 15 \cdot 1 = 95$} \\
+        Cost-greedy and greedy-dynamic: allocation $a_c$ & 0 & 2 & 0 \\
+        \quad $e_c$, \ $B_{ct}(T)$ & 2, 4 & 1, 6 & 2, 10 \\
+        \quad excess & 0 & 0 & 3 \\
+        \quad penalty & \multicolumn{3}{c}{$15 \cdot 3 = 45$} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
 \subsection{Experimental Setup}
 
-DCL used $n = 2000$ labeled samples per generation, $m = 100$ rollouts per candidate action, and a rollout horizon of $h = 50$ periods, for three generations. The policy network encodes each block of the state (inventory and pipeline, backorders, demand, cumulative backorder, time remaining, allowances) separately before a shared trunk of two layers of 128 units. It was trained with cross-entropy loss for up to 50 epochs with early stopping. Training took 253 seconds on a laptop CPU. The best validation accuracy of the three generations was 75\%, 82\% and 76\%. This is a reduced budget: the default settings of the accompanying code ($n = 8000$, $m = 200$, $h = 100$) were not run to completion.
+DCL used $n = 2000$ labeled samples per generation, $m = 100$ rollouts per candidate action, and a rollout horizon of $h = 50$ periods, for three generations. The policy network encodes each block of the state (inventory and pipeline, backorders, demand, cumulative backorder, time remaining, allowances) separately before a shared trunk of two layers of 128 units. It was trained with cross-entropy loss for up to 50 epochs with early stopping. Training took 242 seconds on a laptop CPU. The validation score of the three generations, reported by DynaPlex as $100 \exp(-\ell)$ for the validation cross-entropy loss $\ell$ and not a classification accuracy, was 81\%, 80\% and 83\%. This is a reduced budget: the default settings of the accompanying code ($n = 8000$, $m = 200$, $h = 100$) were not run to completion.
 
-All policies were evaluated on the same 100 simulated trajectories, each of 1000 periods after a warm-up of 100 periods, using common random numbers. We report the long-run average cost per period, which is the objective of Section~\ref{sec:objective}, and the paired difference to a benchmark policy on the same demand sequences. The reported errors are standard errors of the mean over the 100 trajectories. Backorders are counted at the beginning of each period, as defined in the cumulative backorder sum and in Step~6.
+All policies were evaluated on the same 100 simulated trajectories, each of 1000 periods after a warm-up of 100 periods, using common random numbers. We report the long-run average cost per period, which is the objective of Section~\ref{sec:objective}, and the paired difference to a benchmark policy on the same demand sequences. The reported errors are standard errors of the mean over the 100 trajectories. Backorders are counted at the end of each period, after its allocation, as defined in Section~\ref{sec:horizonstats} and in Step~6.
 
 \subsection{Results}
 
@@ -423,19 +555,19 @@ All policies were evaluated on the same 100 simulated trajectories, each of 1000
         \toprule
         Policy & Cost per period & Difference to cost-greedy & Relative \\
         \midrule
-        FCFS            & 65.17 (0.59) & $+11.30$ (0.09) & $+21.0\%$ \\
-        SLA-gap         & 55.42 (0.57) & $+1.55$ (0.04)  & $+2.9\%$ \\
-        Greedy-dynamic  & 54.37 (0.54) & $+0.50$ (0.02)  & $+0.9\%$ \\
-        Cost-greedy     & 53.87 (0.54) & $0$             & $0\%$ \\
+        FCFS            & 65.17 (0.58) & $+12.16$ (0.09) & $+22.9\%$ \\
+        SLA-gap         & 55.26 (0.57) & $+2.25$ (0.04)  & $+4.2\%$ \\
+        Greedy-dynamic  & 53.46 (0.54) & $+0.45$ (0.02)  & $+0.8\%$ \\
+        Cost-greedy     & 53.01 (0.54) & $0$             & $0\%$ \\
         \midrule
-        DCL, generation 1 & 52.71 (0.52) & $-1.16$ (0.04) & $-2.2\%$ \\
-        DCL, generation 2 & 52.37 (0.53) & $-1.50$ (0.04) & $-2.8\%$ \\
-        DCL, generation 3 & 52.83 (0.52) & $-1.04$ (0.04) & $-1.9\%$ \\
+        DCL, generation 1 & 52.32 (0.53) & $-0.69$ (0.04) & $-1.3\%$ \\
+        DCL, generation 2 & 52.45 (0.52) & $-0.56$ (0.04) & $-1.0\%$ \\
+        DCL, generation 3 & 52.29 (0.53) & $-0.71$ (0.03) & $-1.3\%$ \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-The ordering of the rule-based policies is clear: FCFS, which ignores the SLAs, costs about 21\% more than cost-greedy, while the SLA-aware rules are much closer to each other. All three DCL generations have lower average cost than every rule-based policy. The improvement over cost-greedy is modest in relative terms, between 1.9\% and 2.8\%, but it is more than twenty standard errors large because the comparison is paired. The cost does not decrease steadily from one DCL generation to the next: generation 2 is the best and generation 3 is worse again, and we have not tested whether the differences between generations are significant.
+The ordering of the rule-based policies is clear: FCFS, which ignores the SLAs, costs about 23\% more than cost-greedy, while the SLA-aware rules are much closer to each other. All three DCL generations have lower average cost than every rule-based policy. The improvement over cost-greedy is small in relative terms, about 1\%, but it is many standard errors large because the comparison is paired. We do not observe a clear improvement from one DCL generation to the next: generation 2 is slightly worse than generations 1 and 3, and we have not tested whether the differences between generations are significant.
 
 \paragraph{Limitations.} These results are for a single instance, a single base-stock level, one evaluation seed and a reduced training budget, and no repeated training runs were carried out. They show that a learned allocation can beat the best rule-based policy here, but they do not yet show how large the gain is in general, and the gain may depend on the base-stock level.
 
@@ -444,15 +576,15 @@ The ordering of the rule-based policies is clear: FCFS, which ignores the SLAs, 
 This model formalizes a multi-period, multi-customer, multi-item inventory system where:
 
 \begin{itemize}
-    \item \textbf{Orders} follow a static base-stock policy: $Q_i(t) = \max(0, S_i - \text{IP}_i(t))$
+    \item \textbf{Orders} follow a static base-stock policy: $q_{it} = (S_i - \IP_{it})^+$
 
-    \item \textbf{Allocations} are chosen dynamically by policy $\pi(s_t)$ to minimize long-run average cost
+    \item \textbf{Allocations} are chosen dynamically by a policy $\pi(\mathbf{s}_t) \in \mathcal{A}(\mathbf{s}_t)$ to minimize long-run average cost
 
-    \item \textbf{Backorders} are tracked per customer-item and accumulated within each review horizon, inclusive of the horizon's last period, to assess SLA compliance
+    \item \textbf{Backorders} are tracked per customer-item and counted at the end of each period, after its allocation; their sum over the periods of each review horizon, including its last period, is compared with the customer's allowance to assess SLA compliance
 
     \item \textbf{Costs} consist of holding cost (every period, on post-allocation inventory) and SLA penalties (at horizon end, if cumulative backorders exceed the customer's allowance)
 
-    \item \textbf{Research objective:} Find the optimal allocation policy $\pi^*$ that minimizes long-run average cost while respecting SLA constraints
+    \item \textbf{Research objective:} Find the optimal allocation policy $\pi^*$ that minimizes long-run average cost, including the SLA penalties
 \end{itemize}
 
 %% ============================================================

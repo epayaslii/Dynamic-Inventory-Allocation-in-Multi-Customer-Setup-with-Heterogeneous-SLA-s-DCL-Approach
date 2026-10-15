@@ -1,288 +1,119 @@
 # Code walkthrough: `python/multi_customer_sla/`
 
-A section-by-section explanation for presenting the code. Symbols follow the
-paper (`docs/paper_improved_complete.tex`). Line numbers refer to the files as
-of this commit.
+A section-by-section explanation for presenting the code. Symbols follow the paper
+(`docs/paper_improved_complete.tex`): lowercase `b`, `d`, `a`, `q`, `tau` for the lead time and `T` for the
+review horizon. Customer-item pairs are flattened as `c * n_items + i`.
 
-The pipeline in one sentence: `mdp.py` defines the inventory system,
-`policies.py` gives rule-based allocation baselines, `network.py` defines the
-neural network, `train_and_compare.py` trains the network with DCL and
-compares it with the baselines, and `validate.py` checks the MDP's invariants
-without any learning.
-
----
-
-## 0. The action space (the part DCL needs defined)
-
-**Where it is defined.** The action space lives in `mdp.py`, not in
-`validate.py` or `train_and_compare.py`. Those two files only *use* it:
-`validate.py` drives it with policies, `train_and_compare.py` hands it to DCL.
-
-**Definition.**
-
-    A = {0, 1, ..., |C|-1, |C|}          num_actions = |C| + 1   (mdp.py:248)
-
-- Action `c` (0 <= c < |C|): give the next unit of the item currently being
-  rationed to customer `c`.
-- Action `|C|`: HOLD. Keep that unit in the warehouse.
-
-**Why a single integer.** DynaML requires every action to be one scalar int.
-The paper's decision is a whole matrix `A_{c,i}(t)` with
-`sum_c A_{c,i}(t) <= OH'_i(t)`. So the matrix is built from a *sequence* of
-scalar decisions, one per unit of scarce stock: "who gets this unit?". The
-tally of those choices is exactly `A_{c,i}(t)`. This reaches every feasible
-allocation in the paper, not a subset.
-
-**When the policy is asked.** Only when an item is genuinely short:
-
-- If `sum_c (BO_{c,i} + D_{c,i}) <= OH'_i`, everyone is served in full and no
-  decision is asked (mdp.py:369-375). The module docstring argues this is
-  lossless: withholding stock that could be given only raises holding cost and
-  backorders.
-- If `OH'_i <= 0`, nothing can be given, all owed units become backorder, and
-  no decision is asked (mdp.py:376-386).
-- Otherwise the state moves to `AWAIT_ACTION` and the policy is asked once per
-  unit of `OH'_i`, until the units run out or nobody is owed anything
-  (mdp.py:326).
-
-**Action validity mask** (`write_action_validity`, mdp.py:340). Customer `c` is
-a valid action iff `alloc_owed[c] > 0`, i.e. they are still owed a unit of this
-item. This enforces `A_{c,i} <= BO_{c,i} + D_{c,i}`, which the paper implies
-through `BO >= 0`. HOLD is always valid. DCL only samples and ranks valid
-actions.
-
-**What DCL does with it** (`train_and_compare.py`). At sampled states DCL
-tries each valid action, rolls the current policy forward `h` periods `m`
-times per action, picks the lowest-cost action, and trains the network to
-classify "best action" from the state features. The network output has
-`num_actions = |C| + 1` logits.
-
-**What the paper does not say.** The paper leaves the policy `pi` open; this
-encoding is an implementation choice forced by DynaML. The one feature with no
-paper counterpart is the `alloc_item` one-hot (see section 1.7), which tells
-the network which item a given unit-decision concerns.
+The pipeline in one sentence: `mdp.py` defines the inventory system, `policies.py` gives rule-based allocation
+policies, `network.py` defines the neural network, `train_and_compare.py` trains it with DCL and compares it with the
+rules, `validate.py` checks the MDP against the paper's formulas without any learning, and `example_policies.py` is a
+small made-up example that prints a period trace and the cost of each policy.
 
 ---
 
-## 1. `mdp.py` — the model
+## 0. The action space
 
-### 1.1 `State` (mdp.py:130)
+Defined in `mdp.py` (`num_actions = |C| + 1`); `validate.py` and `train_and_compare.py` only use it.
 
-| Field | Paper symbol | Meaning |
+    A = {0, ..., |C|-1, |C|}      action c: give the next unit of the scarce item to customer c
+                                  action |C|: HOLD (keep the unit)
+
+- **Why one integer.** DynaML actions are a single scalar. The paper's decision is the matrix `a_cit`, so it is built
+  from a sequence of unit decisions; the tally is `a_cit`. Every allocation with `a_ci <= b_cit + d_cit` and
+  `sum_c a_ci <= OH'_it` can be produced.
+- **When the policy is asked.** Only for an item with `sum_c (b_cit + d_cit) > OH'_it` and `OH'_it > 0`: once per
+  available unit, until the units run out or nobody is owed anything. Otherwise the code allocates in full (or
+  nothing) without a decision.
+- **Validity mask.** Customer `c` is valid iff it is still owed a unit of the item (`alloc_owed[c] > 0`); HOLD is
+  always valid.
+- **What DCL does with it.** At sampled states it tries each valid action, rolls the current policy forward `h`
+  periods `m` times per action, and trains the network to classify the best action. The network has `|C| + 1` logits.
+
+---
+
+## 1. `mdp.py`
+
+### 1.1 `State`
+| Field | Paper | Meaning |
 |---|---|---|
-| `pipelines[i]` | `OH'_i(t)`, `Q_i(t-L+1..t-1)` | FIFO queue per item. Slot 0 is on-hand including this period's arriving order; slots 1..L-1 are the orders still in transit. |
-| `backorder[c*|I|+i]` | `BO_{c,i}(t)` | Units of item `i` owed to customer `c`, flattened. |
-| `current_demand` | `D_{c,i}(t)` | This period's sampled demand. |
-| `current_allocation` | `A_{c,i}(t)` | Grows as unit-decisions are made. |
-| `cumulative_backorder[c]` | `BObar_c(t)` | Sum of the beginning-of-period backorders of the earlier periods in the horizon (excludes period `t`). |
-| `entering_backorder[c]` | `BO_c(t)` | Customer `c`'s total backlog entering the period, recorded before allocation changes `backorder`. |
-| `time_remaining[c]` | `T_rem` | Periods left in customer `c`'s horizon. |
-| `alloc_*` | none | Scratch state for the item currently being rationed. |
-| `category` | none | `AWAIT_EVENT` (environment moves) or `AWAIT_ACTION` (policy moves). |
+| `on_hand[i]` | `OH_it` | on-hand at the start of the period |
+| `pipeline[i]` | `q_{i,t-tau..t-1}` | queue of `tau` orders, oldest first (`[0]` arrives this period) |
+| `backorder[c*n_items+i]` | `b_cit` | owed at the beginning of the period |
+| `demand[...]` | `d_cit` | demand observed in the period |
+| `cum_backorder[c]` | `B_{c,t-1}(T)` | cumulative end-of-period backorders of the earlier periods of the horizon |
+| `time_remaining` | `R_{t-1}(T)` | periods left in the horizon (one number, shared by all customers) |
+| `order[i]`, `allocation[...]`, `alloc_item`, `alloc_owed[c]`, `alloc_units` | none | scratch for the period and for the unit-by-unit allocation |
 
-Design point to explain: the paper tracks `OH_i(t)` and `Q_i(t-L)` separately
-but only ever uses their sum `OH'_i(t)`. The code stores the sum in slot 0, so
-the queue has `L` slots instead of `L+1`. The same trick is used by DynaPlex's
-own lost-sales model.
+The state variables keep their start-of-period values during the whole allocation; the period's results are written
+in `_finalize_period`.
 
-### 1.2 `MultiCustomerSlaMDP.__init__` (mdp.py:195)
+### 1.2 `MultiCustomerSlaMDP.__init__`
+Takes `number_of_customers`, `number_of_items`, `lead_time` (`tau`), `review_horizon` (`T`), `holding_costs`,
+`backorder_allowances`, `penalty_costs`, `demand_rates` (flattened) and `base_stock_level`. Demand is Poisson per pair,
+or Geometric with the same mean where `high_demand_variance` is 1. Nothing is specific to an instance size.
 
-Takes the paper's parameters: `lead_time` (L), `review_horizon` (T),
-`holding_costs` (h_i), `backorder_allowances` (beta_c), `penalty_costs` (p_c),
-`base_stock_level` (S_i), `demand_rates`. Each (customer, item) pair gets a
-Poisson demand by default, or a Geometric one when `high_demand_variance` is 1
-(a higher-variance demand with the same mean). `horizon_type = INFINITE`
-encodes the paper's long-run average-cost objective. `__init__` is plain
-Python; only the methods below are compiled by DynaML.
+### 1.3 `get_initial_state`
+`OH_i1 = S_i`, `tau` zero orders in each pipeline, no backorders, `B = 0` and `R = T`.
 
-Two things differ from the paper's text and are worth stating when presenting:
-`review_horizon` is a list (one `T_k` per customer) where the paper has a single
-`T`, and `lead_time >= 1` is asserted where the paper allows `L >= 0`.
+### 1.4 `modify_state_with_event` (Steps 1 to 3)
+Per item: `OH'_it = OH_it + pipeline[i][0]`, `IP_it = OH'_it + (other pipeline orders) - sum_c b_cit`, and the order
+`q_it = (S_i - IP_it)^+` is stored in `state.order`. Then the demands are sampled, and the allocation starts.
 
-### 1.3 `get_initial_state` (mdp.py:253)
+### 1.5 `_advance_items` and `modify_state_with_action` (Step 4)
+`_advance_items` goes item by item. For an item it computes what is owed (`b + d`) and takes one of three branches:
+the stock covers everything owed (allocate in full), there is no stock (allocate nothing), or the item is scarce (stop
+and ask the policy). `modify_state_with_action` applies one unit decision. When the units run out, or nobody is still
+owed anything, it continues with the next item; after the last item it calls `_finalize_period`.
 
-Each item starts with `S_i` units on hand and empty pipelines; backorders and
-cumulative backorders are zero; every customer's `time_remaining` is its full
-horizon.
+### 1.6 `_finalize_period` (Steps 5 and 6)
+- For each item: the arriving order leaves the pipeline, the new order joins it, `OH_{i,t+1} = OH'_it - sum_c a_cit`,
+  and the holding cost `h_i * OH_{i,t+1}` is charged.
+- `b_{ci,t+1} = b_cit + d_cit - a_cit`.
+- `B_ct = B_{c,t-1} + e_ct` where `e_ct` is the customer's total backorder at the **end** of the period; `R_t = R_{t-1} - 1`.
+- If `R_t = 0` (the horizon's last period): the penalty `p_c (B_ct - beta_c)^+` is charged, `B` restarts at 0 and `R` at `T`.
 
-### 1.4 `modify_state_with_event` (mdp.py:278) — paper Steps 1-3
+The last period's own `e_ct` is the last term of the sum that is charged. At the boundary the individual backorders
+`b` are not reset: units still owed are carried into the next period (they compete for stock there) and count again
+in the new horizon only if they are still unserved at the end of its periods.
 
-This is the environment's move. In order:
-
-1. **Ordering (Steps 1-2).** For each item compute
-   `IP_i = OH'_i + sum(pipeline_rest) - sum_c BO_{c,i}` and push
-   `Q_i = max(0, S_i - IP_i)` onto the queue. Ordering is action-independent,
-   so it happens here before any decision.
-2. **Demand (Step 3).** Sample `D_{c,i}(t)` for every pair and zero the
-   allocations.
-3. **Hand over to allocation.** Calls `_advance_items(state, context, 0)`.
-
-On "IL vs IP": here `IP` is on-hand plus pipeline minus backorders, exactly the
-paper's inventory-position formula. Inventory *level* is slot 0 (on-hand);
-position adds the pipeline.
-
-### 1.5 `_advance_items` and `modify_state_with_action` — Step 4
-
-`_advance_items` (mdp.py:350) walks the items in order. For each item it pops
-`OH'_i`, computes what each customer is owed (`BO + D`), and takes one of three
-branches: full coverage, nothing to give, or genuine scarcity (stop and ask the
-policy). After the last item it calls `_finalize_period`.
-
-`modify_state_with_action` (mdp.py:311) applies one unit-decision: it
-increments `current_allocation` for the chosen customer (or does nothing for
-HOLD), decrements that customer's `alloc_owed` and the units still available.
-When the units run out or nobody is owed anything, the item is finalized:
-unserved owed units become `BO_{c,i}(t+1)` (paper eq. for `BO(t+1)`), the
-remaining stock becomes `OH_i(t+1)`, and processing resumes at the next item.
-
-### 1.6 `_finalize_item` and `_finalize_period` — Steps 5-6
-
-`_finalize_item` (mdp.py:397) charges holding cost
-`h_i * OH_i(t+1)` on the stock left after allocation and folds that leftover
-into slot 0, which becomes next period's `OH'_i(t+1)`.
-
-`_finalize_period` (mdp.py:407):
-
-- adds each customer's entering backlog `BO_c(t)` (recorded at the start of the period) into `cumulative_backorder[c]`;
-- decrements `time_remaining[c]`; at zero it charges
-  `p_c * max(0, cumulative_backorder[c] - beta_c)` and resets both counters;
-- returns to `AWAIT_EVENT`.
-
-Each customer's horizon runs on its own clock. With equal `T_k` this is the
-paper's single-`T` model.
-
-**Backorder timing (settled).** Backorders are counted at the beginning of
-each period. The cumulative sum adds the backlog that *entered* period `t` and
-excludes the backorder created by period `t`'s own allocation, which counts from
-the next period (and, for a horizon's last period, towards the next horizon).
-`docs/backorder_timing_report.md` explains the decision and its effect.
-
-### 1.7 `MultiCustomerSlaFeaturizer` (mdp.py:432)
-
-Converts a `State` into the flat vector the network sees, in this order:
-
-| Block | Size | Paper state variable |
-|---|---|---|
-| Per-item on-hand + pipeline | `|I|*L` | `OH`, `Q(t-1..t-L)` |
-| `backorder[c,i]` | `|C||I|` | `BO_{c,i}` |
-| `current_demand[c,i]` | `|C||I|` | `D_{c,i}` |
-| `cumulative_backorder[c]` | `|C|` | `BObar_c` |
-| `time_remaining[c]` | `|C|` | `T_rem` (one per customer here) |
-| `backorder_allowances[c]` | `|C|` | `beta_c` |
-| `alloc_item` one-hot | `|I|` | none (needed by the unit-by-unit encoding) |
-
-For the item under rationing, slot 0 reports `alloc_on_hand` (the original
-`OH'_i`) rather than the queue's slot 0, which has already been popped.
+### 1.7 `MultiCustomerSlaFeaturizer`
+The paper's state followed by four blocks about the allocation in progress:
+`OH_it` and the `tau` pipeline orders per item; `b`; `d`; `B_{c,t-1}`; `R_{t-1}`; `beta`; then the item one-hot, the units
+still owed per customer, the units left to decide, and the allocation so far. The last four blocks have no counterpart in
+the paper; without them consecutive unit decisions would look identical to the policy.
 
 ---
 
-## 2. `policies.py` — rule-based baselines
+## 2. `policies.py`
+The paper prescribes no allocation policy; these are benchmarks and the generation-0 rollout policy. Each answers
+"who gets the next unit?" and never holds. Pseudocode and a worked example are in the paper.
+- **FCFS:** the lowest-indexed customer still owed a unit.
+- **SLA-gap:** the customer with the largest `B_{c,t-1} - beta_c`.
+- **Cost-greedy:** among customers with `B_{c,t-1} + o_c + w_c > beta_c`, the one with the highest `p_c`; else the
+  lowest index. (`o_c`: units still owed of the current item; `w_c`: units still owed on the other items.)
+- **Greedy-dynamic:** cost-greedy if some `B_{c,t-1} > beta_c`, SLA-gap if some `B_{c,t-1} > 0.8 beta_c`, else FCFS.
 
-The paper does not prescribe an allocation policy. These four exist as
-benchmarks and as DCL's starting policy. Each answers one question: "who gets
-the next unit of the item being rationed?"
+## 3. `network.py`
+`BlockMLP` encodes each of the ten feature blocks with its own `Linear + ReLU` before a shared trunk to `|C| + 1`
+logits. `block_mlp_factory` computes the block sizes from `|C|`, `|I|`, `tau` and checks that they sum to the
+featurizer's declared size, so a mismatch fails loudly.
 
-- **`FCFSPolicy`** (policies.py:23): the lowest-index customer still owed a
-  unit. Never holds.
-- **`SlaGapPolicy`** (policies.py:36): the owed customer with the largest
-  `cumulative_backorder - beta_c`, i.e. furthest past (or closest to) their
-  allowance.
-- **`CostGreedyPolicy`** (policies.py:57): projects each owed customer's
-  backorder this horizon if the unit is withheld
-  (`cumulative + this period's running total - beta_c`) and serves the one
-  whose penalty `p_c` would be triggered and is highest. Falls back to the
-  lowest index when nobody is projected to breach.
-- **`GreedyDynamicPolicy`** (policies.py:83): switches rule by SLA pressure.
-  If any customer already exceeds `beta_c` it uses CostGreedy; if any is above
-  80% of `beta_c` it uses SlaGap; otherwise FCFS. The 80% threshold is
-  carried over from the earlier C++ code, not from the paper.
+## 4. `train_and_compare.py`
+Builds the paper's instance (2 customers, 3 items, `tau = 2`, `T = 20`), checks the interfaces, runs DCL (`--n`, `--m`,
+`--h`, `--generations`; defaults 8000, 200, 100, 3) from `GreedyDynamicPolicy` with `BlockMLP`, and compares the
+agents with the four rules using `PolicyComparer` on common random numbers (100 trajectories, 1000 periods after a
+warm-up of 100). From generation 1 on, rollouts call the network and are roughly 13 to 19 times slower per simulated
+period than rule-based rollouts.
 
-None of them ever chooses HOLD. Only a learned policy (or `AlwaysHoldPolicy`
-in `validate.py`) can.
+## 5. `validate.py`
+Plain CPython, so no DynaML compile. For several policies and instance sizes it checks, every period (however the
+period ends): the order `(S - IP)^+` with `IP` recomputed from the start-of-period state; inventory-position
+conservation (`OH + pipeline - b = max(S, IP) - d` after the period); the horizon statistics `B` and `R` against the
+paper's sum formula; the period cost against holding + penalty; nonnegativity; and action validity (HOLD always valid).
+`AlwaysHoldPolicy` exercises the HOLD branch. It does not check DynaML compilation; `compare_baselines.py` does.
 
----
-
-## 3. `network.py` — the policy network
-
-`BlockMLP` (network.py:55) encodes each of the seven feature blocks with its
-own `Linear + ReLU`, concatenates the encodings, and runs them through a shared
-trunk to `num_actions` logits. The point: a plain MLP sees one undifferentiated
-vector, so it must learn from data that feature 4 and feature 41 belong to the
-same customer. Block encoders bake that grouping in.
-
-`block_mlp_factory` (network.py:97) is the contract DynaPlex calls to build the
-network. It computes the block sizes from `|C|`, `|I|`, `L` and checks they sum
-to the featurizer's declared size, so a mismatch between `write_features` and
-the network fails loudly instead of silently misreading the tensor.
-
-`dp.MLP` is a drop-in alternative if a plain network is preferred.
-
----
-
-## 4. `train_and_compare.py` — DCL training and comparison
-
-1. **Instance** (train_and_compare.py:22): 2 customers, 3 items, `L=2`,
-   `T=20` for both, `beta=[6, 8]`, `p=[50, 60]`, `S=[6, 7, 5]`. The base stock
-   is deliberately below demand so rationing, and hence the learned decision,
-   actually occurs.
-2. **Static checks**: `assert_mdp`, `assert_policy_for_mdp`,
-   `assert_featurizer_for_mdp` are no-ops at runtime. They let pyright verify
-   the code satisfies DynaPlex's interfaces.
-3. **Network**: `dp.Net("network.block_mlp_factory", ...)` points DCL at
-   `BlockMLP`.
-4. **DCL** (train_and_compare.py:77):
-   - `GreedyDynamicPolicy` is the generation-0 policy used for rollouts.
-   - `n=8000` labelled samples per generation.
-   - `m=200` rollouts per candidate action.
-   - `h=100` periods per rollout.
-   - `loss="ce"` (cross-entropy): the network is a classifier of the best
-     action.
-   - `generations=3`: each generation rolls out the previous generation's
-     policy, so the policy improves iteratively.
-5. **Comparison** (train_and_compare.py:93): `PolicyComparer` simulates 100
-   trajectories with a 100-period warm-up and a 1000-period horizon, using the
-   same random numbers for every policy, so cost differences are not noise from
-   different demand draws. It compares the four baselines against each DCL
-   generation.
-
-The metric is long-run average cost per period, matching the paper's
-objective.
-
----
-
-## 5. `validate.py` — invariant checks without learning
-
-It drives raw trajectories in plain CPython (no DynaML compile), so a bug in
-the model is separated from a bug in training.
-
-- **Instance** (validate.py:78): 3 customers, 2 items, deliberately unequal
-  `T = [10, 15, 8]` to exercise independent horizon boundaries, with some
-  Geometric demands and a tight base stock to force rationing.
-- **`run`** (validate.py:21): steps the MDP and asserts, every period:
-  no negative backorder, no negative pipeline or on-hand slot, cumulative
-  backorder `>= 0`, `1 <= time_remaining[c] <= T_c`, cost `>= 0`.
-- **At each decision** it asserts: `alloc_available > 0` on entering
-  `AWAIT_ACTION`, at least one valid action, HOLD always valid, the policy's
-  action is valid, and a unit-decision reduces `alloc_available` by exactly one
-  and the chosen customer's `alloc_owed` by exactly one.
-- **`AlwaysHoldPolicy`** (validate.py:71): never serves anyone under scarcity.
-  It exercises the HOLD branch, which none of the four baselines ever takes.
-- - **Backorder-accounting check:** after every period it recomputes `BObar_c` from the recorded history with the paper's sum formula and asserts it equals `cumulative_backorder[c]`.
-- It runs all four baselines for 500 periods and AlwaysHold for 200, then
-  prints cost, number of action calls, and the maximum decisions in one
-  period.
-
-What it does not check: that the model compiles under the DynaML JIT (a
-compile-only restriction such as chained comparisons would slip through), so it
-complements running `train_and_compare.py` rather than replacing it.
-
----
-
-## 6. Status of what has been verified
-
-Not run on this machine. The `dynaplex` wheels on PyPI need macOS 15 or later
-(Intel) or macOS 14 or later (Apple Silicon); this Mac is Intel on macOS 13.6.1,
-so `pip install dynaplex` finds no compatible file. The README's claims about
-compilation and training results come from the repo's earlier sessions and are
-not re-verified here. The explanations above come from reading the code, not
-from running it.
+## 6. `example_policies.py` and `compare_baselines.py`
+`example_policies.py` is for learning the workflow: a made-up instance (3 customers A, B, C; 2 items X, Y; `tau = 2`,
+`T = 5`), a printed trace of every step of each period on scripted demand, the cost of each policy on that demand,
+the cost on random demand, and the one-item decision example of the paper. `compare_baselines.py` runs the four
+policies on the paper's instance with `PolicyComparer`.

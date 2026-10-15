@@ -9,145 +9,99 @@ This repository implements a sophisticated inventory management system for a cen
 **Multi-Customer Inventory Allocation Under SLAs:**
 - **Static Ordering:** A fixed base-stock policy (per item) maintains target inventory positions
 - **Dynamic Allocation:** A learned policy decides which customers receive priority when inventory is scarce
-- **SLA Compliance:** Each customer has a cumulative backorder allowance (β_k) per review horizon, with linear penalties if exceeded
+- **SLA Compliance:** Each customer has a cumulative backorder allowance (β_c, in unit-periods) per review horizon, with a linear penalty on the excess
 
 ## Model Formulation
 
-### System Components
+The full model is in `docs/paper_improved_complete.tex`. This is a short summary in the paper's notation (lowercase symbols; customer-item pairs are flattened as `c * |I| + i` in the code).
 
-#### 1. Central Warehouse
-- Stocks a set of items **I** (**|I|** SKUs) for a set of customers **C** (**|C|** customers)
-- Maintains per-item base-stock levels (S_i)
-- Replenishment lead time (L) periods
+### System
+- A supplier stocks items `i ∈ I` and serves customers `c ∈ C` from one shared stock.
+- Lead time `τ ≥ 1` periods; one review horizon of `T` periods shared by all customers; the horizons repeat indefinitely.
+- Demand `d_cit` is Poisson (or Geometric with the same mean) per customer-item pair.
+- Parameters: holding cost `h_i`, base-stock level `S_i`, SLA allowance `β_c` (in unit-periods), penalty cost `p_c`.
 
-#### 2. Per-Customer SLA Metrics
-Each customer k has:
-- **Backorder Allowance (β_k):** Maximum cumulative backorder units tolerated per review horizon
-- **Review Horizon (T_k):** Period length over which SLA compliance is measured, independent per customer
-- **Penalty Cost (p_k):** Linear cost per unit of excess backorders
+### State variables (start of period `t`)
+| Symbol | Code | Meaning |
+|---|---|---|
+| `OH_it` | `state.on_hand[i]` | on-hand inventory, nonnegative |
+| `q_{i,t-τ..t-1}` | `state.pipeline[i]` | the `τ` orders in transit, oldest first |
+| `b_cit` | `state.backorder[c*n_items+i]` | units owed to customer `c` at the beginning of the period |
+| `d_cit` | `state.demand[c*n_items+i]` | demand observed in the period |
+| `B_{c,t-1}(T)` | `state.cum_backorder[c]` | cumulative backorder in the horizon before period `t` |
+| `R_{t-1}(T)` | `state.time_remaining` | periods left in the horizon before period `t` |
+| `β_c` | `backorder_allowances[c]` | allowance (a constant, part of the featurizer) |
 
-#### 3. Demand Model
-- Per-customer, per-item demand: D_{k,i}(t) ~ Poisson or Geometric, selected per (customer, item) via a high-variance flag
+`OH'_it = OH_it + q_{i,t-τ}` (the stock available for allocation) is computed where needed, not stored.
 
-### Key State Variables
+### Decisions
+- **Ordering (static):** `q_it = (S_i − IP_it)^+` with `IP_it = OH'_it + Σ_{j=t-τ+1}^{t-1} q_ij − Σ_c b_cit`. The base-stock levels are fixed.
+- **Allocation (dynamic):** `a_cit` with `a_cit ≤ b_cit + d_cit` and `Σ_c a_cit ≤ OH'_it`. The policy may hold stock back.
 
-| Variable | Meaning | Size |
-|----------|---------|------|
-| **OH_i(t)** | On-hand inventory at the *start* of period t — before receiving Q_i(t-L) and before placing Q_i(t); always nonnegative (unmet demand is tracked via backorders, not negative on-hand) | \|I\| features |
-| **Q_i(t-1...t-L)** | Pipeline orders in transit | \|I\|×L features |
-| **BO_{k,i}(t)** | Backorder per customer-item | \|C\|×\|I\| features |
-| **D_{k,i}(t)** | Realized demand (current period) | \|C\|×\|I\| features |
-| **Σ̄BO_k(t)** | Cumulative backorder within the review horizon: the sum of the beginning-of-period backorders of the *earlier* periods, not including period t itself (0 in a horizon's first period) | \|C\| features |
-| **T_rem_k(t)** | Time remaining in customer k's review horizon | \|C\| features |
-| **β_k** | SLA backorder allowance per customer | \|C\| features |
+### Period workflow
+1. The order `q_{i,t-τ}` arrives. 2. `IP_it` is computed and `q_it` is placed. 3. Demand `d_cit` is observed. 4. The policy allocates `a_cit`. 5. The state is updated: `OH_{i,t+1} = OH'_it − Σ_c a_cit`, `b_{ci,t+1} = b_cit + d_cit − a_cit`, and the horizon statistics. 6. The cost is charged.
 
-**Total State Dimension:** \|I\| + \|I\|·L + \|C\|·\|I\| + \|C\|·\|I\| + \|C\| + \|C\| + \|C\| features
-
-Available supply for allocation each period is OH_i(t) + Q_i(t-L) (on-hand plus the order arriving this period) — there is no separately-tracked "before allocation" state variable; this quantity is simply computed inline wherever it's needed.
-
-### Decision Variables
-
-#### Replenishment (Static)
-Each period, for each item i:
+### Backorders and the SLA (end-of-period convention)
+Backorders are counted at the **end** of each period, after its allocation. With `e_ct = Σ_i (b_cit + d_cit − a_cit)`, the horizon statistics are
 ```
-Q_i(t) = max(0, S_i - IP_i(t))
+B_ct(T) = B_{c,t-1}(T) + e_ct        R_t(T) = R_{t-1}(T) − 1
 ```
-where IP_i(t) = on-hand + pipeline - outstanding backorders
+and in the horizon's last period (`R_t(T) = 0`) the penalty is `Σ_c p_c · (B_ct(T) − β_c)^+`, after which the statistics restart at `(0, …, 0, T)`. The last period's own `e_ct` is therefore counted on its own as the last term of the accumulated sum. A unit backordered at the end of `k` periods counts `k` times. The individual backorders `b_cit` are **not** reset at a horizon boundary: units still owed after a horizon's last period are carried into the next period (they compete for stock there) and count again in the new horizon only if they are still unserved at the end of its periods.
 
-#### Allocation (Dynamic)
-When demand exceeds inventory, the learned policy π(s_t) decides:
-```
-A_{k,i}(t) for each customer k and item i
-```
-subject to:
-```
-Σ_k A_{k,i}(t) ≤ OH_i(t) + Q_i(t-L)
-```
-i.e. total allocation of item i cannot exceed on-hand stock plus this period's arriving order. The policy may allocate less than what is available (a strategic hold) even when demand could be fully covered.
+### Cost
+`C(s_t, a_t) = Σ_i h_i (OH'_it − Σ_c a_cit) + Σ_c p_c · (B_ct(T) − β_c)^+ · 1[R_t(T) = 0]`, minimized as the long-run average cost per period.
 
-### Baseline Rationing Policies
+### Rule-based allocation policies
+`policies.py` has four rules. Each answers "who gets the next unit of the scarce item?" and never holds a unit back (see the module docstring of `mdp.py` for why the action is unit-by-unit). Pseudocode and a worked example are in the paper (Section "Pseudocode of the Benchmark Policies").
+1. **FCFSPolicy:** the lowest-indexed customer still owed a unit.
+2. **SlaGapPolicy:** the customer with the largest `B_{c,t-1}(T) − β_c`.
+3. **CostGreedyPolicy:** among customers projected to exceed their allowance (`B_{c,t-1}(T) + o_c + w_c > β_c`), the one with the highest `p_c`; otherwise the lowest index.
+4. **GreedyDynamicPolicy:** cost-greedy if some `B_{c,t-1}(T) > β_c`, SLA-gap if some `B_{c,t-1}(T) > 0.8 β_c`, otherwise FCFS.
 
-`policies.py` implements four rule-based baselines the learned policy is compared against, each answering "who gets the next available unit?" one unit at a time (see `mdp.py`'s module docstring for why the action is unit-by-unit rather than a whole allocation vector):
-
-1. **FCFSPolicy:** Serves the lowest-index customer still owed a unit
-2. **SlaGapPolicy:** Serves whichever eligible customer is furthest past its SLA backorder allowance
-3. **CostGreedyPolicy:** Serves whichever eligible customer has the largest projected SLA-penalty exposure if withheld
-4. **GreedyDynamicPolicy:** Switches between the three above based on how close any customer is to breaching its allowance
-
-None of these are prescribed by the paper itself — the paper leaves the allocation policy π to be optimized; these exist purely as benchmarks for the learned policy.
-
-## Cost Structure
-
-### Holding Cost (Every Period)
-```
-C_hold(t) = Σ_i h_i * OH_i(t+1)
-```
-Charged on inventory remaining after allocation, i.e. OH_i(t+1), not on-hand stock before allocation.
-
-### SLA Penalty (At Horizon End, Per Customer)
-```
-C_penalty = Σ_k p_k * max(0, Σ̄BO_k(T_k) - β_k)
-```
-Assessed independently for each customer k at the end of *that customer's own* review horizon T_k, with the backorder BO_k(T_k) that enters the horizon's last period added to Σ̄BO_k(T_k) (backorders are counted at the beginning of each period). The backorder created by the last period's own allocation is carried over and counts towards the next horizon.
-
-### Objective
-
-The allocation policy π is chosen to minimize long-run average cost per period — taken as the horizon → ∞ limit over all (repeating) review horizons, not the cost of a single horizon.
-
-## Period Workflow (8 Steps)
-
-1. **Receive Orders:** Q_i(t-L) arrives and is added to on-hand inventory
-2. **Observe IP:** Calculate inventory position: IP_i = OH_i + Σ_pipeline - Σ_BO
-3. **Place Orders:** Q_i(t) = max(0, S_i - IP_i(t))
-4. **Observe Demand:** D_{k,i}(t) realized per customer-item pair
-5. **Check Rationing:** Is Σ_BO + Σ_D > OH? (per item)
-6. **Allocate:** Policy π(s_t) decides allocation when rationing needed
-7. **Update State:** OH and BO updated based on allocations; Σ̄BO_k adds the backorder that entered the period (BO_k(t)), and resets to 0 at each customer's own horizon end
-8. **Calculate Costs:** Holding costs every period, SLA penalties (vs. backorder allowance β_k) at each customer's horizon end
+The paper prescribes no allocation policy; these are benchmarks and the rollout policy of generation 0 of DCL.
 
 ## Deep Controlled Learning
 
-The allocation policy is learned using [DynaPlex](https://dynaplex.github.io/DynaPlex/)'s Deep Controlled Learning (`dp.DCL`): starting from a rollout policy (`GreedyDynamicPolicy` here), it samples candidate actions, evaluates them via lookahead rollouts, and trains a neural network on the best-performing action at each decision point, repeating over successive generations. See `train_and_compare.py` for the full training + comparison loop and `network.py` for the custom `BlockMLP` network used.
+The allocation policy is learned with [DynaPlex](https://dynaplex.github.io/DynaPlex/)'s Deep Controlled Learning (`dp.DCL`): starting from a rollout policy (`GreedyDynamicPolicy`), it samples candidate actions, evaluates them with lookahead rollouts, and trains a neural network on the best action at each decision point, over successive generations. See `train_and_compare.py` and `network.py` (`BlockMLP`).
 
 ## Repository Structure
 
 ```
 .
 ├── docs/
-│   └── paper_improved_complete.tex   # Full paper with model formulation
+│   ├── paper_improved_complete.tex   # the paper (model, policies, results)
+│   ├── code_walkthrough.md           # section-by-section explanation of the code
+│   ├── mdp_paper_alignment.md        # how the code relates to the paper
+│   ├── literature_review_base_stock.md
+│   └── backorder_timing_report.md    # superseded, kept for the record
 ├── python/multi_customer_sla/
-│   ├── mdp.py                        # MDP, State, featurizer
-│   ├── policies.py                   # FCFSPolicy, SlaGapPolicy, CostGreedyPolicy, GreedyDynamicPolicy
+│   ├── mdp.py                        # MDP, State, featurizer (any number of items and customers)
+│   ├── policies.py                   # the four rule-based policies
 │   ├── network.py                    # BlockMLP: custom PyTorch policy network
-│   ├── train_and_compare.py          # DCL training + PolicyComparer example
-│   └── validate.py                   # Plain-CPython invariant checks
-└── README.md (this file)
+│   ├── validate.py                   # plain-CPython invariant checks against the paper's formulas
+│   ├── example_policies.py           # small made-up example: period trace and cost of each policy
+│   ├── compare_baselines.py          # the four policies at one constant base stock (no learning)
+│   └── train_and_compare.py          # DCL training + PolicyComparer
+└── README.md
 ```
 
-## Key Features
-
-✅ **Multi-Customer Support:** Heterogeneous SLA constraints per customer, including independent per-customer review horizons
-✅ **Cumulative Backorder Tracking:** Realistic SLA compliance measurement
-✅ **Unit-by-Unit Allocation Decision:** The learned policy allocates each scarce unit directly, not from a fixed menu of rationing rules
-✅ **Rule-Based Baselines:** FCFS, SLA-gap, cost-based-greedy, and a dynamic switch between them, for comparison against the learned policy
-✅ **Deep Controlled Learning:** Policy optimization via neural networks
-
-## Implementation (Official DynaPlex / DynaML)
-
-`python/multi_customer_sla/` implements the model on the **official** `dynaplex` package (dynaplex.github.io/DynaPlex, `pip install dynaplex`), with models authored in **DynaML**, a compiled Python subset.
-
-It implements `docs/paper_improved_complete.tex` directly: the action *is* the allocation decision A_{c,i}(t) itself (built from a sequence of scalar "who gets the next unit" decisions, since DynaML actions are always a single int — see the module docstring in `mdp.py`), not a choice among a fixed menu of rationing heuristics.
+## Running
 
 ```bash
-pip install dynaplex   # Python 3.11-3.14; see dynaplex.github.io for platforms
+pip install dynaplex torch      # Python 3.11-3.14; macOS needs 15+ on Intel, 14+ on Apple Silicon
 cd python/multi_customer_sla
-python validate.py           # plain-CPython invariant checks
-python train_and_compare.py  # DCL training + PolicyComparer (requires torch)
+python validate.py              # invariant checks (any instance size)
+python example_policies.py      # follow the period workflow; cost of each policy on a made-up instance
+python compare_baselines.py     # the four policies on the paper's instance (compiles under DynaML)
+python train_and_compare.py     # DCL training (slow: see --n --m --h --generations)
 ```
+On Intel Macs the last available torch is 2.2.2, which needs `numpy<2`.
 
-Scope: `mdp.py` implements the full MDP, its state, and a featurizer exposing the paper's declared state variables. `policies.py` has the four rule-based baseline policies described above, used as DCL's generation-0 rollout policy and as comparison baselines. `network.py` has `BlockMLP`, a custom PyTorch network with real autograd that encodes the featurizer's feature blocks separately before a shared trunk, wired into `DCL` via `dynaplex.nn.Net`'s importable-factory contract; `dp.MLP` also works against this model (tested) if a plain flat-vector MLP is preferred instead.
+## Status of verification
 
-Verified against the real package: `assert_mdp` / `assert_policy_for_mdp` / `assert_featurizer_for_mdp` for the MDP and all four policies, a plain-CPython simulation checking the paper's invariants across all four policies (`validate.py`), DynaML compilation of the MDP and every policy (including `GreedyDynamicPolicy`'s composition of the other three) under the JIT `engine` backend, a real PyTorch backward pass through `BlockMLP` confirming every parameter receives a gradient, and end-to-end `DCL` training + `PolicyComparer` runs with both `BlockMLP` and `dp.MLP`.
+Checked on the current code: `validate.py` passes (it recomputes the order, the inventory position, the horizon statistics and the period cost from the paper's formulas, and fails when the MDP is deliberately broken), pyright accepts the `assert_mdp` / `assert_policy_for_mdp` / `assert_featurizer_for_mdp` calls, `compare_baselines.py` compiles and runs the MDP and all four policies under the DynaML engine, and the featurizer's output length matches its declared size and the network's block sizes for several instance sizes.
+
+**Not yet re-run on the current code:** DCL training. The featurizer now includes the allocation-in-progress blocks (see `mdp.py`), so the training results reported in the paper's results section come from the earlier version and must be regenerated.
 
 ## Related Work
 
