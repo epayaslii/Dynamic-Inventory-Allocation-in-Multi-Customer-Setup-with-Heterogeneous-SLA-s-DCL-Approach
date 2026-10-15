@@ -87,15 +87,22 @@ The allocation policy is learned with [DynaPlex](https://dynaplex.github.io/Dyna
 
 ## Running
 
+`dynaplex` and `torch` live in a virtual environment (`.venv`, created once in the repository root). The scripts only work with that environment's Python, not with the system `python3` (and on macOS there is no `python`, only `python3`).
+
 ```bash
-pip install dynaplex torch      # Python 3.11-3.14; macOS needs 15+ on Intel, 14+ on Apple Silicon
+# once, from the repository root:
+python3 -m venv .venv
+.venv/bin/pip install dynaplex torch      # Python 3.11-3.14; macOS needs 15+ on Intel, 14+ on Apple Silicon
+
+# every time:
+source .venv/bin/activate                 # or call .venv/bin/python directly
 cd python/multi_customer_sla
 python validate.py              # invariant checks (any instance size)
 python example_policies.py      # follow the period workflow; cost of each policy on a made-up instance
 python compare_baselines.py     # the four policies on the paper's instance (compiles under DynaML)
 python train_and_compare.py     # DCL training (slow: see --n --m --h --generations)
 ```
-On Intel Macs the last available torch is 2.2.2, which needs `numpy<2`.
+On Intel Macs the last available torch is 2.2.2, which needs `numpy<2` (`.venv/bin/pip install "numpy<2"`). In VS Code, select the interpreter `.venv/bin/python` (Command Palette: *Python: Select Interpreter*) before using the Run button.
 
 ## Status of verification
 
