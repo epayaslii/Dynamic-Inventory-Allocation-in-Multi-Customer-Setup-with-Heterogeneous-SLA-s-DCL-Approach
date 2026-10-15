@@ -28,15 +28,13 @@ def main() -> None:
     parser.add_argument("--generations", type=int, default=3)
     args = parser.parse_args()
 
-    # 2 customers, 3 items -- same illustrative instance as the project
-    # README's C++ configuration example, translated to this MDP's fields
-    # (a single shared lead_time per paper Sec. 3.1; review_horizon is
-    # per-customer T_k, matching the README's `reviewHorizons`).
+    # 2 customers, 3 items: the instance of the paper's numerical-results section
+    # (lead time tau = 2 and one review horizon T = 20 shared by all customers).
     mdp = MultiCustomerSlaMDP(
         number_of_customers=2,
         number_of_items=3,
         lead_time=2,
-        review_horizon=[20, 20],
+        review_horizon=20,
         holding_costs=[1.0, 0.8, 1.2],
         backorder_allowances=[6, 8],
         penalty_costs=[50.0, 60.0],

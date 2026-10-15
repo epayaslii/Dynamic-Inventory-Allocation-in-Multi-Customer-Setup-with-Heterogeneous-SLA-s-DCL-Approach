@@ -1,107 +1,82 @@
 """
 Multi-customer, multi-item inventory allocation under heterogeneous SLAs.
 
-A direct DynaML port of docs/paper_improved_complete.tex ("Dynamic Inventory
+A DynaML implementation of docs/paper_improved_complete.tex ("Dynamic Inventory
 Allocation in Multi-Customer Systems with Heterogeneous Service Level
-Agreements"). Unlike the earlier prototype on this branch (which exposed a
-menu of four fixed rationing HEURISTICS as the action), this implements the
-paper's actual decision variable directly: the allocation A_{c,i}(t) itself,
-subject only to sum_c A_{c,i}(t) <= OH'_i(t) (paper Sec. "Allocation Decision
-(dynamic)"). The learned policy decides who gets each unit of scarce stock.
+Agreements"). The number of customers |C| and items |I|, the lead time tau and
+the review horizon T are all constructor arguments; nothing below is specific
+to a particular instance size.
 
-Why not a single vector-valued action
---------------------------------------
-DynaML's MDPProtocol requires `modify_state_with_action(state, context,
-action: int) -> None` and `PolicyProtocol.get_action(state) -> int`: actions
-are always a single scalar int (verified against the installed `dynaplex`
-package, not just the docs site). There is no vector/combinatorial action
-type. Following the idiom the framework's own bundled models use to build up
-a multi-part decision (see dynaplex.models.binpacking, which places one
-weight into one bin per AWAIT_ACTION/AWAIT_EVENT step), a full per-item
-allocation is built here from a SEQUENCE of scalar decisions: for an item
-under scarcity, the policy is asked, once per unit of available stock,
-"who gets this unit?" -- action in {0, ..., |C|-1} names a customer,
-action == |C| means HOLD (paper: allocation "may [be] less than what is
-available -- a strategic hold -- even when demand could be fully covered").
-The resulting A_{c,i}(t) is exactly the tally of per-unit choices, so this
-enumerates precisely the feasible set {A : 0 <= A_c <= BO_{c,i}+D_{c,i},
-sum_c A_c <= OH'_i(t)} -- not a restriction to a handful of heuristics.
-
-Full coverage needs no decision
---------------------------------
-When available supply already covers every customer's backlog and new
-demand for an item (sum_c owed_c <= OH'_i(t)), the code allocates in full
-without asking the policy anything. This is not just a simplification: it is
-WLOG cost-minimizing under this paper's cost structure. Holding back a unit
-that somebody needs, when supply allows serving them, can only (a) raise
-this period's holding cost (charged on post-allocation on-hand, Step 6) and
-(b) create backorder that only ever adds to a customer's cumulative SLA
-exposure -- never reduces it. So under full coverage, allocating in full is
-always weakly better than any partial hold, for every possible continuation.
-The action space (and the HOLD action) is therefore only exercised under
-genuine scarcity, where such reservation-for-later tradeoffs are real.
-
-Per-customer review horizons
+Notation (paper symbol -> code)
 -------------------------------
-The paper's Sec. 3.1 formalizes T and r(t) = ceil(t/T) as a SINGLE, shared
-quantity, with "Time Remaining" listed as exactly 1 state feature -- but the
-paper's own subject is heterogeneous, customer-specific SLAs (beta_c, p_c
-already vary by customer), and this repo's C++/README model already allows
-each customer its own review horizon T_k (README: `reviewHorizons`). This
-port follows the more general C++/README convention: review_horizon is a
-list of length |C| (one T_k per customer), time_remaining is |C| independent
-counters, and each customer's cumulative backorder is reset and its SLA
-penalty assessed on ITS OWN period boundary, not tied to any other
-customer's. The paper's literal single-T model is the special case
-T_1 = ... = T_|C|; nothing here prevents recovering it by passing equal
-values.
+    OH_it                 state.on_hand[i]        on-hand at the START of period t
+    q_{i,t-tau..t-1}      state.pipeline[i]       tau orders in transit, oldest first
+                                                  (front = q_{i,t-tau}, arrives in Step 1)
+    b_cit                 state.backorder[c*|I|+i] owed at the START of period t
+    d_cit                 state.demand[c*|I|+i]    demand observed in Step 3
+    a_cit                 state.allocation[c*|I|+i] allocation (built up during Step 4)
+    B_{c,t-1}(T)          state.cum_backorder[c]   cumulative backorder in the horizon,
+                                                  END-of-period counts of periods before t
+    R_{t-1}(T)            state.time_remaining     periods left in the horizon, before t
+    beta_c, p_c, h_i, S_i backorder_allowances[c], penalty_costs[c], holding_costs[i],
+                          base_stock_level[i]
+    tau, T                lead_time, review_horizon
+    OH'_it = OH_it + q_{i,t-tau}  is not stored; it is computed where needed.
+Customer-item pairs are flattened as c * |I| + i.
 
-Single, shared lead time
---------------------------
-Likewise Sec. 3.1 declares L as one scalar ("replenishment lead time"), not
-one per item, and the state-dimension formula |I|*L uses it uniformly. This
-port assumes L >= 1 (L == 0 -- same-period replenishment -- would need a
-different FifoQueue convention below and is not implemented).
+Period workflow (paper Sec. "Period Workflow")
+----------------------------------------------
+modify_state_with_event runs Steps 1-3:
+    1. the order q_{i,t-tau} arrives: OH'_it = OH_it + q_{i,t-tau}
+    2. IP_it = OH'_it + sum of the other tau-1 pipeline orders - sum_c b_cit,
+       and the order q_it = (S_i - IP_it)^+ is placed (stored in state.order)
+    3. demands d_cit are sampled
+and then starts Step 4 (allocation). Steps 5 and 6 (state update and cost) run in
+_finalize_period once every item is allocated. Until then the state variables
+on_hand, pipeline and backorder keep their START-of-period values, exactly as in
+the paper's definition of s_t; the allocation made so far lives in state.allocation.
 
-SLA penalty timing: backorders are counted at the BEGINNING of each period
---------------------------------------------------------------------------
-BO_c(t) is the backlog owed to customer c ENTERING period t, i.e. before
-period t's demand is added and before period t's allocation (paper Sec.
-3.3.3). The cumulative sum BObar_c(t) adds up BO_c(j) over the EARLIER periods
-j of the current review horizon and does NOT include period t itself:
-    BObar_c(t)   = sum_{j = (r-1)T+1}^{t-1} BO_c(j)       (0 in a horizon's
-                                                            first period)
-    BObar_c(t+1) = BObar_c(t) + BO_c(t)    inside a horizon
-                 = 0                       when period t+1 starts a horizon
-and the penalty at a horizon's last period t = rT is
-    p_c * max(0, BObar_c(t) + BO_c(t) - beta_c).
-So the backorder that period t's OWN allocation creates, BO_c(t+1), is not
-charged in the horizon containing t; it is the next period's beginning-of-
-period backorder. In particular the backorder created by a horizon's last
-period counts towards the NEXT horizon.
+Backorder convention (paper Sec. "Review Horizon Statistics")
+-------------------------------------------------------------
+Backorders are counted at the END of each period, after its allocation. The
+backorder of customer c at the end of period t is e_ct = sum_i (b_cit + d_cit -
+a_cit) (which equals sum_i b_{ci,t+1}). Within a horizon the statistics are
+    B_ct = B_{c,t-1} + e_ct                      (accumulated)
+    R_t  = R_{t-1} - 1
+and at the horizon's last period (R_t = 0) the penalty is
+    p_c * max(0, B_ct - beta_c),
+so the last period's own end-of-period backorder e_ct counts on its own as the last
+term of the accumulated sum. The statistics then restart at (0, ..., 0, T). A unit
+that is backordered at the end of k periods of the horizon counts k times
+(unit-periods). Individual backorders b_cit persist across horizon boundaries.
 
-Implementation: modify_state_with_event records each customer's total entering
-backlog in state.entering_backorder before anything in the period changes
-state.backorder; _finalize_period adds that to cumulative_backorder[c], then
-runs the per-customer boundary/penalty check. Adding the entering backlog and
-then testing the boundary is exactly the two cases above. (An earlier version
-of this file instead added the backorder left AFTER the period's allocation,
-i.e. BO_c(t+1); the paper's text was ambiguous and has since been settled in
-favour of the beginning-of-period reading above.)
+The action
+----------
+DynaML actions are a single scalar int, while the paper's decision is the matrix
+a_cit. Following DynaPlex's own bundled models (e.g. binpacking), the matrix is
+built from a SEQUENCE of scalar decisions. For an item whose stock cannot cover
+what is owed (sum_c (b_cit + d_cit) > OH'_it) the policy is asked, once per
+available unit, "who gets this unit?":
+    action c in {0, ..., |C|-1}   give one unit of the item to customer c
+    action |C|                    HOLD: keep the unit in the warehouse
+so num_actions = |C| + 1. The allocation is the tally of these choices, and every
+allocation in the paper's feasible set
+    {a : a_ci <= b_cit + d_cit,  sum_c a_ci <= OH'_it}
+can be produced. Customer c is a valid action iff it is still owed a unit of the
+item (state.alloc_owed[c] > 0); HOLD is always valid. The policy is not asked when
+the stock covers everything owed (the code allocates in full) or when there is no
+stock. This restricts the policies considered to those that allocate in full when
+supply covers everything owed; holding stock back can still be optimal in general
+(e.g. to reserve it for a customer close to its allowance), so the restriction is
+not lossless.
 
-On-hand representation (OH'_i(t), not separately OH_i(t))
-------------------------------------------------------------
-The paper's own state dimension count folds OH'_i(t) = OH_i(t) + Q_i(t-L)
-back out of the total ("it is not an independent piece of state ... given
-its own symbol because it recurs"), and the project's README already
-documents this simplification for the C++ model: "there is no
-separately-tracked 'before allocation' state variable." Consistent with
-that, and with how dynaplex's own bundled lost_sales.py model represents
-inventory (`state.on_hand += state.pipeline.pop_front()`, arrival folded
-straight in), the FifoQueue used below stores OH'_i(t) at slot 0 and the
-remaining L-1 in-transit orders at slots 1..L-1 -- |I|*L numbers total per
-item, not |I|*(L+1) -- since OH_i(t) and Q_i(t-L) are never used separately
-anywhere in the model, only their sum.
+Scratch state (not in the paper): `order`, `alloc_item`, `alloc_owed`,
+`alloc_units`, and `allocation` exist only because the allocation is decomposed
+into unit decisions. They are exposed to the policy and the network through the
+featurizer, otherwise consecutive unit decisions would look identical.
+
+DynaML restrictions respected here: no Python builtins such as max/min/sum/list
+inside compiled methods (plain loops instead), and no chained comparisons.
 """
 from dataclasses import dataclass
 from typing import Final
@@ -125,48 +100,20 @@ from dynaplex.modelling import (
 
 @dataclass(slots=True)
 class State:
-    """
-    pipelines[i]: FIFO queue of item i's available stock + pipeline orders,
-      front first. pipelines[i][0] = OH'_i(t) (on-hand INCLUDING this
-      period's arriving order, BEFORE this period's allocation) while item i
-      has not yet been popped for processing this period; once popped (item
-      i's allocation has been decided, in full or unit by unit), slot 0
-      instead holds the order that will be OH'_i(t+1)'s arrival component,
-      pending the leftover stock `_finalize_item` folds in.
-      pipelines[i][1:] = the remaining L-1 orders still in transit.
-    backorder[c*|I|+i]: BO_{c,i}(t), flattened per (customer, item) --
-      updated for item i once its allocation for this period is finalized.
-    current_demand / current_allocation[c*|I|+i]: this period's D_{c,i}(t)
-      (fixed once sampled) / A_{c,i}(t) (grows as unit-decisions are made),
-      flattened the same way.
-    cumulative_backorder[c]: BObar_c(t), the sum of beginning-of-period
-      backorders of EARLIER periods in the horizon (excludes period t); reset
-      for customer c at ITS OWN review-horizon boundary (see module
-      docstring: review horizons are per-customer, T_k).
-    entering_backorder[c]: BO_c(t), customer c's total backlog entering the
-      current period, recorded before the period's allocation changes
-      `backorder`; added to cumulative_backorder when the period finalizes.
-    time_remaining[c]: T_rem for customer c -- one independent counter per
-      customer, each cycling through its own review_horizon[c].
-    alloc_item / alloc_owed / alloc_on_hand / alloc_available: scratch state
-      for the item currently being rationed unit by unit (meaningful only
-      while category == AWAIT_ACTION). alloc_owed[c] = BO_{c,i}+D_{c,i}
-      remaining unassigned for customer c on item alloc_item; alloc_on_hand
-      = OH'_i(t) for that item (fixed for the item's duration, used to
-      recover the leftover once decisions finish); alloc_available = how
-      many of alloc_on_hand's units are still undecided.
-    """
-    pipelines: list[FifoQueue]
+    """Start-of-period state variables of the paper, plus scratch fields for the
+    unit-by-unit allocation. See the module docstring for the symbol mapping."""
+    on_hand: list[int]
+    pipeline: list[FifoQueue]
     backorder: list[int]
-    current_demand: list[int]
-    current_allocation: list[int]
-    cumulative_backorder: list[float]
-    entering_backorder: list[int]
-    time_remaining: list[int]
+    demand: list[int]
+    cum_backorder: list[int]
+    time_remaining: int
+    # scratch
+    order: list[int]
+    allocation: list[int]
     alloc_item: int
     alloc_owed: list[int]
-    alloc_on_hand: int
-    alloc_available: int
+    alloc_units: int
     period: int
     category: StateCategory
 
@@ -174,16 +121,23 @@ class State:
 @const_dataclass(init=False, slots=True)
 class MultiCustomerSlaMDP:
     """
-    Actions: 0 .. number_of_customers - 1 assign the next available unit of
-    the item currently being rationed to that customer; action
-    number_of_customers HOLDs the unit (see module docstring). Ordering is
-    entirely static (base-stock, paper Sec. "Ordering Decision (static)")
-    and does not depend on the action at all.
+    Parameters (lists indexed as in the paper; demand_rates is flattened c*|I|+i):
+        number_of_customers  |C|
+        number_of_items      |I|
+        lead_time            tau >= 1
+        review_horizon       T >= 1, shared by all customers
+        holding_costs        h_i  (size |I|)
+        backorder_allowances beta_c (size |C|), in unit-periods
+        penalty_costs        p_c  (size |C|)
+        demand_rates         lambda_ci (size |C|*|I|), the mean demand per period
+        base_stock_level     S_i  (size |I|), fixed; only the allocation is optimized
+        high_demand_variance 1 for a Geometric demand with the same mean,
+                             0 (default) for Poisson, per customer-item pair
     """
     number_of_customers: int
     number_of_items: int
     lead_time: int
-    review_horizon: list[int]
+    review_horizon: int
     holding_costs: list[float]
     backorder_allowances: list[int]
     penalty_costs: list[float]
@@ -198,7 +152,7 @@ class MultiCustomerSlaMDP:
         number_of_customers: int,
         number_of_items: int,
         lead_time: int,
-        review_horizon: list[int],
+        review_horizon: int,
         holding_costs: list[float],
         backorder_allowances: list[int],
         penalty_costs: list[float],
@@ -208,14 +162,14 @@ class MultiCustomerSlaMDP:
     ) -> None:
         # NOTE: __init__ is never called by the DynaML compiler; full CPython is allowed here.
         assert number_of_customers >= 1 and number_of_items >= 1
-        assert lead_time >= 1, "this port assumes lead_time >= 1 (L == 0 is not yet supported)"
-        assert len(review_horizon) == number_of_customers, "one review horizon T_k per customer"
-        assert all(t >= 1 for t in review_horizon)
+        assert lead_time >= 1, "lead_time (tau) must be >= 1"
+        assert review_horizon >= 1
         assert len(holding_costs) == number_of_items
         assert len(base_stock_level) == number_of_items
         assert len(backorder_allowances) == number_of_customers
         assert len(penalty_costs) == number_of_customers
         assert all(b >= 0 for b in backorder_allowances)
+        assert all(s >= 0 for s in base_stock_level)
         assert len(demand_rates) == number_of_customers * number_of_items
 
         variance_flags = (
@@ -227,7 +181,7 @@ class MultiCustomerSlaMDP:
         self.number_of_customers = number_of_customers
         self.number_of_items = number_of_items
         self.lead_time = lead_time
-        self.review_horizon = list(review_horizon)
+        self.review_horizon = review_horizon
         self.holding_costs = list(holding_costs)
         self.backorder_allowances = list(backorder_allowances)
         self.penalty_costs = list(penalty_costs)
@@ -252,74 +206,59 @@ class MultiCustomerSlaMDP:
     # -- lifecycle -------------------------------------------------------
 
     def get_initial_state(self, context: TrajectoryContext) -> State:
-        pipelines: list[FifoQueue] = []
+        # Paper, initial state: OH_i1 = S_i, empty pipeline, no backorders,
+        # and period 1 starts a review horizon (B = 0, R = T).
+        on_hand: list[int] = []
+        pipeline: list[FifoQueue] = []
         for i in range(self.number_of_items):
+            on_hand.append(self.base_stock_level[i])
             q = FifoQueue()
             q.reserve(self.lead_time + 1)
-            q.fill(self.lead_time)
-            q[0] = self.base_stock_level[i]
-            pipelines.append(q)
-
-        time_remaining: list[int] = []
-        for c in range(self.number_of_customers):
-            time_remaining.append(self.review_horizon[c])
+            q.fill(self.lead_time)  # tau zero orders
+            pipeline.append(q)
 
         n_pairs = self.number_of_customers * self.number_of_items
         return State(
-            pipelines=pipelines,
+            on_hand=on_hand,
+            pipeline=pipeline,
             backorder=[0] * n_pairs,
-            current_demand=[0] * n_pairs,
-            current_allocation=[0] * n_pairs,
-            cumulative_backorder=[0.0] * self.number_of_customers,
-            entering_backorder=[0] * self.number_of_customers,
-            time_remaining=time_remaining,
+            demand=[0] * n_pairs,
+            cum_backorder=[0] * self.number_of_customers,
+            time_remaining=self.review_horizon,
+            order=[0] * self.number_of_items,
+            allocation=[0] * n_pairs,
             alloc_item=0,
             alloc_owed=[0] * self.number_of_customers,
-            alloc_on_hand=0,
-            alloc_available=0,
+            alloc_units=0,
             period=0,
             category=StateCategory.AWAIT_EVENT,
         )
 
     def modify_state_with_event(self, state: State, context: TrajectoryContext) -> None:
-        # BO_c(t): backlog entering this period, recorded before anything below
-        # (allocation, in particular) changes state.backorder.
-        for c in range(self.number_of_customers):
-            entering = 0
-            for i in range(self.number_of_items):
-                entering += state.backorder[c * self.number_of_items + i]
-            state.entering_backorder[c] = entering
-
-        # Steps 1-2 (paper): static base-stock ordering for every item.
-        # Action-independent, so it runs unconditionally here, before any
-        # allocation decision -- matching the paper's period workflow, where
-        # ordering happens before demand is even observed.
+        # Steps 1-2: receive the arriving order, compute IP and place the order.
+        # The order depends only on the state, not on the allocation, so it is
+        # computed here, before demand is observed.
         for i in range(self.number_of_items):
-            on_hand_and_arriving = state.pipelines[i][0]  # OH'_i(t)
+            on_hand_before_allocation = state.on_hand[i] + state.pipeline[i][0]  # OH'_it
             pipeline_rest = 0
-            for j in range(1, len(state.pipelines[i])):
-                pipeline_rest += state.pipelines[i][j]
+            for j in range(1, self.lead_time):
+                pipeline_rest += state.pipeline[i][j]
             backorder_sum = 0
             for c in range(self.number_of_customers):
                 backorder_sum += state.backorder[c * self.number_of_items + i]
-            ip = on_hand_and_arriving + pipeline_rest - backorder_sum
+            ip = on_hand_before_allocation + pipeline_rest - backorder_sum
 
             to_order = self.base_stock_level[i] - ip
-            order_qty = to_order if to_order > 0 else 0
-            state.pipelines[i].push_back(order_qty)
+            state.order[i] = to_order if to_order > 0 else 0
 
-        # Step 3: demand realisation for every (customer, item) pair. This
-        # is part of s_t, which the allocation policy below is allowed to
-        # use -- unlike ordering, allocation is decided AFTER demand.
+        # Step 3: demand for every customer-item pair.
         for c in range(self.number_of_customers):
             for i in range(self.number_of_items):
                 idx = c * self.number_of_items + i
-                state.current_demand[idx] = self.demand_samplers[idx].sample(context.rng)
-                state.current_allocation[idx] = 0
+                state.demand[idx] = self.demand_samplers[idx].sample(context.rng)
+                state.allocation[idx] = 0
 
-        # Step 4: allocate item by item. Items with sufficient supply are
-        # resolved immediately inside _advance_items; the first item found
-        # under scarcity hands control to the policy.
+        # Step 4: allocate item by item.
         self._advance_items(state, context, 0)
 
     def modify_state_with_action(self, state: State, context: TrajectoryContext, action: int) -> None:
@@ -327,34 +266,21 @@ class MultiCustomerSlaMDP:
 
         i = state.alloc_item
         if action < self.number_of_customers:
-            c = action
-            state.current_allocation[c * self.number_of_items + i] += 1
-            state.alloc_owed[c] -= 1
-        # action == number_of_customers: HOLD -- nothing to assign.
-        state.alloc_available -= 1
+            state.allocation[action * self.number_of_items + i] += 1
+            state.alloc_owed[action] -= 1
+        # action == number_of_customers: HOLD, nothing is assigned.
+        state.alloc_units -= 1
 
         total_remaining = 0
         for c in range(self.number_of_customers):
             total_remaining += state.alloc_owed[c]
 
-        if state.alloc_available <= 0 or total_remaining == 0:
-            # This item's rationing is done: whatever wasn't handed to a
-            # customer (explicit HOLDs, plus anything left once nobody
-            # still needs it) becomes next period's on-hand leftover.
-            total_assigned = 0
-            for c in range(self.number_of_customers):
-                total_assigned += state.current_allocation[c * self.number_of_items + i]
-                state.backorder[c * self.number_of_items + i] = state.alloc_owed[c]
-            leftover = state.alloc_on_hand - total_assigned
-            self._finalize_item(state, context, i, leftover)
+        if state.alloc_units <= 0 or total_remaining == 0:
             self._advance_items(state, context, i + 1)
         else:
             state.category = StateCategory.AWAIT_ACTION
 
     def write_action_validity(self, state: State, valid: Validity) -> None:
-        # Only customers still owed a unit of the item under rationing are
-        # eligible; HOLD is always allowed (paper: allocation may fall
-        # short of what's available).
         for c in range(self.number_of_customers):
             valid.set(c, state.alloc_owed[c] > 0)
         valid.set(self.number_of_customers, True)
@@ -362,82 +288,77 @@ class MultiCustomerSlaMDP:
     # -- internals ---------------------------------------------------------
 
     def _advance_items(self, state: State, context: TrajectoryContext, start_item: int) -> None:
-        """Resolve items start_item, start_item+1, ... in order. Items with
-        supply covering owed backlog+demand are settled immediately, with no
-        policy call (see module docstring: this is WLOG cost-minimizing).
-        The first item found under scarcity hands control to the policy via
-        AWAIT_ACTION and returns; modify_state_with_action resumes this loop
-        (at i + 1) once that item's rationing is done. Once every item is
-        settled, the period is finalized."""
+        """Settle items start_item, start_item+1, ... in order. An item whose
+        available supply OH'_it covers everything owed, sum_c (b_cit + d_cit), is
+        allocated in full without asking the policy; an item with no stock gets
+        nothing. The first item that is genuinely scarce hands control to the
+        policy (AWAIT_ACTION) and returns; modify_state_with_action resumes the
+        loop at the next item. Once all items are settled the period is finalized."""
         i = start_item
         while i < self.number_of_items:
-            on_hand = state.pipelines[i].pop_front()  # OH'_i(t)
+            on_hand_before_allocation = state.on_hand[i] + state.pipeline[i][0]  # OH'_it
 
             owed: list[int] = [0] * self.number_of_customers
             total_owed = 0
             for c in range(self.number_of_customers):
                 idx = c * self.number_of_items + i
-                owed[c] = state.backorder[idx] + state.current_demand[idx]
+                owed[c] = state.backorder[idx] + state.demand[idx]
                 total_owed += owed[c]
 
-            if total_owed <= on_hand:
+            if total_owed <= on_hand_before_allocation:
                 for c in range(self.number_of_customers):
-                    idx = c * self.number_of_items + i
-                    state.current_allocation[idx] = owed[c]
-                    state.backorder[idx] = 0
-                self._finalize_item(state, context, i, on_hand - total_owed)
+                    state.allocation[c * self.number_of_items + i] = owed[c]
                 i += 1
-            elif on_hand <= 0:
-                # Nothing at all to hand out: every customer's owed amount
-                # becomes backorder, with no decision to make (alloc_available
-                # would start at 0 -- entering AWAIT_ACTION here would ask the
-                # policy to decide something with zero units to place).
+            elif on_hand_before_allocation <= 0:
+                # Nothing to hand out, so there is no decision to make.
                 for c in range(self.number_of_customers):
-                    idx = c * self.number_of_items + i
-                    state.current_allocation[idx] = 0
-                    state.backorder[idx] = owed[c]
-                self._finalize_item(state, context, i, 0)
+                    state.allocation[c * self.number_of_items + i] = 0
                 i += 1
             else:
                 state.alloc_item = i
                 state.alloc_owed = owed
-                state.alloc_on_hand = on_hand
-                state.alloc_available = on_hand
+                state.alloc_units = on_hand_before_allocation
                 state.category = StateCategory.AWAIT_ACTION
                 return
 
         self._finalize_period(state, context)
 
-    def _finalize_item(self, state: State, context: TrajectoryContext, i: int, leftover: int) -> None:
-        # Holding cost (paper Step 6): h_i * OH_i(t+1), charged on stock
-        # remaining AFTER this item's allocation.
-        if leftover > 0:
-            context.cumulative_cost += float(leftover) * self.holding_costs[i]
-        # Slot 0 currently holds the order that will arrive at the start of
-        # next period (see State docstring); folding leftover in here is
-        # what keeps that slot equal to OH'_i(t+1) once next period starts.
-        state.pipelines[i][0] += leftover
-
     def _finalize_period(self, state: State, context: TrajectoryContext) -> None:
+        # Step 5, on-hand inventory and pipeline; Step 6, holding cost.
+        for i in range(self.number_of_items):
+            on_hand_before_allocation = state.on_hand[i] + state.pipeline[i].pop_front()  # OH'_it
+            assigned = 0
+            for c in range(self.number_of_customers):
+                assigned += state.allocation[c * self.number_of_items + i]
+            new_on_hand = on_hand_before_allocation - assigned  # OH_{i,t+1}
+            state.on_hand[i] = new_on_hand
+            state.pipeline[i].push_back(state.order[i])
+            context.cumulative_cost += float(new_on_hand) * self.holding_costs[i]
+
+        # Step 5, backorders: b_{ci,t+1} = b_cit + d_cit - a_cit.
+        for idx in range(self.number_of_customers * self.number_of_items):
+            state.backorder[idx] = state.backorder[idx] + state.demand[idx] - state.allocation[idx]
+
+        # Step 5, review horizon statistics: B_ct = B_{c,t-1} + e_ct, where e_ct is
+        # customer c's backorder at the END of this period (after its allocation).
+        for c in range(self.number_of_customers):
+            end_of_period_backorder = 0
+            for i in range(self.number_of_items):
+                end_of_period_backorder += state.backorder[c * self.number_of_items + i]
+            state.cum_backorder[c] += end_of_period_backorder
+        state.time_remaining -= 1  # R_t
+
+        # Step 6, SLA penalty at the horizon's last period (R_t = 0); then the
+        # statistics restart at (0, ..., 0, T).
+        if state.time_remaining == 0:
+            for c in range(self.number_of_customers):
+                excess = state.cum_backorder[c] - self.backorder_allowances[c]
+                if excess > 0:
+                    context.cumulative_cost += float(excess) * self.penalty_costs[c]
+                state.cum_backorder[c] = 0
+            state.time_remaining = self.review_horizon
+
         state.period += 1
-
-        # Beginning-of-period accounting (see module docstring): add BO_c(t),
-        # the backlog that ENTERED this period, not the backlog left after it.
-        for c in range(self.number_of_customers):
-            state.cumulative_backorder[c] += float(state.entering_backorder[c])
-
-        # Per-customer review horizons (see module docstring): each
-        # customer's SLA is assessed, and its cumulative sum reset, on ITS
-        # OWN boundary -- independent of every other customer's.
-        for c in range(self.number_of_customers):
-            state.time_remaining[c] -= 1
-            if state.time_remaining[c] == 0:
-                exceeded = state.cumulative_backorder[c] - float(self.backorder_allowances[c])
-                if exceeded > 0.0:
-                    context.cumulative_cost += exceeded * self.penalty_costs[c]
-                state.cumulative_backorder[c] = 0.0
-                state.time_remaining[c] = self.review_horizon[c]
-
         state.category = StateCategory.AWAIT_EVENT
         context.time_elapsed += 1
 
@@ -446,56 +367,59 @@ class MultiCustomerSlaMDP:
 @dataclass(slots=True)
 class MultiCustomerSlaFeaturizer(Featurizer):
     """
-    Features, in order:
-      - per item: [OH'_i(t)-or-alloc_on_hand, L-1 pipeline-in-transit values]
-        (|I| * lead_time numbers -- see module docstring on OH' vs OH)
-      - backorder[c,i]                     (|C| * |I|)
-      - current_demand[c,i]                (|C| * |I|)
-      - cumulative_backorder[c]            (|C|)
-      - time_remaining[c]                  (|C|)
-      - backorder_allowances[c] (beta_c)   (|C|, constant, from mdp config)
-      - one-hot: which item is under rationing right now (alloc_item)
-                                            (|I|)
-    The last block has no counterpart in the paper's state list: the paper
-    does not itself decompose the allocation decision into unit-by-unit
-    sub-steps (that is purely this DynaML encoding's doing, see module
-    docstring), so nothing else here identifies which item a given
-    unit-decision is about. Similarly, time_remaining is |C| numbers (one per
-    customer) rather than the paper's literal 1, since this port generalizes
-    to per-customer review horizons T_k (see module docstring). Everything
-    else mirrors paper Sec. 3.3 exactly.
+    Features, in this order (the block sizes below are used by network.py):
+      1. per item: OH_it, then its tau pipeline orders, oldest first
+                                                   |I| * (1 + tau)
+      2. b_cit                                      |C| * |I|
+      3. d_cit                                      |C| * |I|
+      4. B_{c,t-1}(T)                               |C|
+      5. R_{t-1}(T)                                 1
+      6. beta_c                                     |C|
+    Blocks 1 to 6 are the paper's state s_t (dimension |I| + |I|tau + 2|C||I| +
+    2|C| + 1). The remaining blocks describe the unit-by-unit allocation in
+    progress and have no counterpart in the paper:
+      7. one-hot of the item being rationed         |I|
+      8. units still owed per customer for it       |C|   (alloc_owed)
+      9. units of it still to be decided            1     (alloc_units)
+     10. allocation made so far, a_cit              |C| * |I|
+    Without blocks 7 to 10 consecutive unit decisions of the same item would be
+    indistinguishable to the policy.
     """
     mdp: Final[MultiCustomerSlaMDP]
     v: Final[GlobalStateWriter]
 
     def write_features(self, state: State) -> None:
         for i in range(self.mdp.number_of_items):
-            if i == state.alloc_item:
-                self.v.append(float(state.alloc_on_hand))
-            else:
-                self.v.append(float(state.pipelines[i][0]))
-            for j in range(1, self.mdp.lead_time):
-                self.v.append(float(state.pipelines[i][j]))
+            self.v.append(float(state.on_hand[i]))
+            for j in range(self.mdp.lead_time):
+                self.v.append(float(state.pipeline[i][j]))
 
         self.v.extend(state.backorder)
-        self.v.extend(state.current_demand)
-        self.v.extend(state.cumulative_backorder)
-        self.v.extend(state.time_remaining)
+        self.v.extend(state.demand)
+        self.v.extend(state.cum_backorder)
+        self.v.append(float(state.time_remaining))
         for c in range(self.mdp.number_of_customers):
             self.v.append(float(self.mdp.backorder_allowances[c]))
+
         for i in range(self.mdp.number_of_items):
             self.v.append(1.0 if i == state.alloc_item else 0.0)
+        self.v.extend(state.alloc_owed)
+        self.v.append(float(state.alloc_units))
+        self.v.extend(state.allocation)
 
     def spec(self) -> dict:
         n_c = self.mdp.number_of_customers
         n_i = self.mdp.number_of_items
         size = (
-            n_i * self.mdp.lead_time
-            + n_c * n_i  # backorder
-            + n_c * n_i  # current_demand
-            + n_c        # cumulative_backorder
-            + n_c        # time_remaining
-            + n_c        # backorder_allowances
-            + n_i        # alloc_item one-hot
+            n_i * (1 + self.mdp.lead_time)  # on hand + pipeline
+            + n_c * n_i                     # b
+            + n_c * n_i                     # d
+            + n_c                           # B
+            + 1                             # R
+            + n_c                           # beta
+            + n_i                           # alloc_item one-hot
+            + n_c                           # alloc_owed
+            + 1                             # alloc_units
+            + n_c * n_i                     # allocation so far
         )
         return {"v": TensorSpec(Dtype.float32, (size,))}

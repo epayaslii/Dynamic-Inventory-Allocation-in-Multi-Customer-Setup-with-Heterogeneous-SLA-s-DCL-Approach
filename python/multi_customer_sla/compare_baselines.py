@@ -19,7 +19,7 @@ def main() -> None:
         number_of_customers=2,
         number_of_items=3,
         lead_time=2,
-        review_horizon=[20, 20],
+        review_horizon=20,
         holding_costs=[1.0, 0.8, 1.2],
         backorder_allowances=[6, 8],
         penalty_costs=[50.0, 60.0],

@@ -26,11 +26,11 @@ verified end-to-end against the installed dynaplex package, producing a
 trained NNAgent that beats the FCFS baseline). This module exists because a
 plain MLP treats MultiCustomerSlaFeaturizer's flat vector as one
 undifferentiated blob, ignoring that it is actually several semantically
-distinct blocks (paper Sec. 3.3): per-item inventory, per-(customer,item)
-backorder, per-(customer,item) demand, per-customer cumulative backorder,
-time remaining, per-customer SLA allowance, and the alloc-item pointer (see
-mdp.py's MultiCustomerSlaFeaturizer.write_features for the exact order/
-sizes). BlockMLP encodes each block separately before combining them, so
+distinct blocks (paper Sec. "State Variables"): per-item inventory and
+pipeline, per-(customer,item) backorder, per-(customer,item) demand,
+per-customer cumulative backorder, time remaining, per-customer SLA allowance,
+and four blocks describing the unit-by-unit allocation in progress (see mdp.py's
+MultiCustomerSlaFeaturizer for the exact order and sizes). BlockMLP encodes each block separately before combining them, so
 the network doesn't have to learn from scratch, purely from data, that (say)
 feature 4 and feature 41 both pertain to the same customer.
 
@@ -48,7 +48,7 @@ import torch.nn as nn
 
 
 class BlockMLP(nn.Module):
-    """Per-block encoder + shared trunk. Each of the 7 feature blocks listed
+    """Per-block encoder + shared trunk. Each of the 10 feature blocks listed
     above is passed through its own small Linear+ReLU encoder; the encoded
     blocks are concatenated and fed through a shared MLP trunk down to
     num_actions logits. A size-0 block (e.g. lead_time == 1, so there are no
@@ -114,13 +114,16 @@ def block_mlp_factory(
 
     n_c, n_i, lt = number_of_customers, number_of_items, lead_time
     block_sizes = [
-        n_i * lt,   # per-item on-hand + pipeline
-        n_c * n_i,  # backorder[c, i]
-        n_c * n_i,  # current_demand[c, i]
-        n_c,        # cumulative_backorder[c]
-        n_c,        # time_remaining[c]
-        n_c,        # backorder_allowances[c]
-        n_i,        # alloc_item one-hot
+        n_i * (1 + lt),  # per item: on-hand OH_it and its tau pipeline orders
+        n_c * n_i,       # b_cit
+        n_c * n_i,       # d_cit
+        n_c,             # B_{c,t-1}(T)
+        1,               # R_{t-1}(T)
+        n_c,             # beta_c
+        n_i,             # alloc_item one-hot
+        n_c,             # alloc_owed
+        1,               # alloc_units
+        n_c * n_i,       # allocation so far
     ]
     declared_size = tensor_spec.sample_shape[0]
     if sum(block_sizes) != declared_size:

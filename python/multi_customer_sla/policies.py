@@ -1,17 +1,25 @@
 """
-Rule-based rationing policies for MultiCustomerSlaMDP.
+Rule-based allocation policies for MultiCustomerSlaMDP.
 
-Ported from src/lib/models/multi_customer_sla/policies.{h,cpp}. The C++
-policies pick, once per period, WHICH of four fixed rationing rules to run
-(BaseStockPolicy: always the same rule; GreedyDynamicPolicy: switches rule
-based on SLA pressure). That framing doesn't survive the move to this
-model's action encoding, where a "rule" isn't a period-level choice anymore
--- it's applied unit by unit (see mdp.py's module docstring). So each C++
-rule below is translated into a get_action(state) that answers "who gets
-THIS unit of the item currently being rationed" (state.alloc_item /
-state.alloc_owed), and GreedyDynamicPolicy is translated into switching
-which of those three per-unit rules currently applies, using the same
-SLA-pressure test as the C++ version.
+The paper prescribes no allocation policy, so these are benchmarks (and the
+rollout policy of generation 0 of DCL). Each answers one question, asked once per
+available unit of the item i = state.alloc_item that is scarce in period t:
+
+    "Which customer gets the next unit?"
+
+Notation used below (see mdp.py for the full mapping):
+    o_c       = state.alloc_owed[c]      units of item i still owed to customer c
+                                         (b_cit + d_cit minus what it already got)
+    E         = { c : o_c > 0 }          the eligible customers (never empty here)
+    B_c       = state.cum_backorder[c]   B_{c,t-1}(T), the cumulative backorder of
+                                         the horizon before period t
+    beta_c, p_c                          the allowance and the penalty cost
+    other_c   = sum over items j != i of (b_cjt + d_cjt - a_cjt)
+                                         what customer c is still owed on the
+                                         other items, given the allocation so far
+
+Every policy returns a customer index (never HOLD); ties go to the lowest index.
+The pseudocode of the four policies, with worked examples, is in the paper.
 """
 from dynaplex.modelling import const_dataclass
 
@@ -20,91 +28,78 @@ from mdp import MultiCustomerSlaMDP, State
 
 @const_dataclass(slots=True)
 class FCFSPolicy:
-    """At each unit-decision, serves the lowest-index customer still owed a
-    unit of the item under rationing -- never HOLDs. The natural
-    unit-by-unit translation of first-come-first-served rationing
-    (BaseStockPolicy's action 0 in the C++ model)."""
+    """FCFS: serve the lowest-indexed eligible customer."""
     mdp: MultiCustomerSlaMDP
 
     def get_action(self, state: State) -> int:
         for c in range(self.mdp.number_of_customers):
             if state.alloc_owed[c] > 0:
                 return c
-        return self.mdp.number_of_customers  # unreachable: AWAIT_ACTION implies some owed[c] > 0
+        return self.mdp.number_of_customers  # unreachable: AWAIT_ACTION implies E is not empty
 
 
 @const_dataclass(slots=True)
 class SlaGapPolicy:
-    """At each unit-decision, serves whichever eligible customer is furthest
-    past their SLA backorder allowance (largest cumulative_backorder[c] -
-    beta_c) -- a myopic, SLA-aware rationing heuristic; never HOLDs.
-    Translation of the C++ model's action 1 (backorder-gap myopic)."""
+    """SLA-gap: serve the eligible customer with the largest gap B_c - beta_c, i.e.
+    the one furthest above (or least far below) its allowance."""
     mdp: MultiCustomerSlaMDP
 
     def get_action(self, state: State) -> int:
         best_c = -1
-        best_gap = 0.0
+        best_gap = 0
         for c in range(self.mdp.number_of_customers):
             if state.alloc_owed[c] > 0:
-                gap = state.cumulative_backorder[c] - float(self.mdp.backorder_allowances[c])
+                gap = state.cum_backorder[c] - self.mdp.backorder_allowances[c]
                 if best_c == -1 or gap > best_gap:
                     best_c = c
                     best_gap = gap
         if best_c == -1:
-            return self.mdp.number_of_customers  # unreachable, see FCFSPolicy
+            return self.mdp.number_of_customers  # unreachable
         return best_c
 
 
 @const_dataclass(slots=True)
 class CostGreedyPolicy:
-    """At each unit-decision, serves whichever eligible customer has the
-    largest projected SLA-penalty exposure if this unit is withheld:
-    cumulative_backorder[c] (prior periods this horizon) + this period's
-    running total across items (already-finalized items' new backorder for
-    items other than the one under rationing, plus the live remaining need
-    -- alloc_owed[c] -- for the item currently being decided) minus
-    beta_c. Falls back to the lowest eligible customer index if nobody is
-    currently projected to breach. Translation of the C++ model's action 3
-    (cost-based greedy); not yet-decided items later in this same period
-    aren't known yet, so this is a running projection, not a final one --
-    the same limitation the C++ per-period version had."""
+    """Cost-greedy: for each eligible customer c, project its cumulative backorder
+    at the end of the period if no further unit were given to it,
+        Bhat_c = B_c + o_c + other_c,
+    and call it at risk if Bhat_c > beta_c. Serve the at-risk customer with the
+    highest penalty p_c; if no eligible customer is at risk, serve the
+    lowest-indexed one.
+
+    Bhat_c is a projection: it treats the customer's remaining owed units on every
+    item as backorder at the end of the period, and ignores that the other items
+    may still receive stock (later items are still undecided). It is a
+    heuristic, not a bound."""
     mdp: MultiCustomerSlaMDP
 
     def get_action(self, state: State) -> int:
         best_c = -1
-        best_cost = -1.0
+        best_penalty = -1.0
         for c in range(self.mdp.number_of_customers):
             if state.alloc_owed[c] > 0:
-                total_owed_now = state.alloc_owed[c]
-                for i2 in range(self.mdp.number_of_items):
-                    if i2 != state.alloc_item:
-                        total_owed_now += state.backorder[c * self.mdp.number_of_items + i2]
-                projected = (
-                    state.cumulative_backorder[c]
-                    + float(total_owed_now)
-                    - float(self.mdp.backorder_allowances[c])
-                )
-                marginal_cost = self.mdp.penalty_costs[c] if projected > 0.0 else 0.0
-                if marginal_cost > best_cost:
-                    best_cost = marginal_cost
+                projected = state.cum_backorder[c] + state.alloc_owed[c]
+                for j in range(self.mdp.number_of_items):
+                    if j != state.alloc_item:
+                        idx = c * self.mdp.number_of_items + j
+                        projected += state.backorder[idx] + state.demand[idx] - state.allocation[idx]
+                penalty = self.mdp.penalty_costs[c] if projected > self.mdp.backorder_allowances[c] else 0.0
+                if penalty > best_penalty:
+                    best_penalty = penalty
                     best_c = c
         if best_c == -1:
-            return self.mdp.number_of_customers  # unreachable, see FCFSPolicy
+            return self.mdp.number_of_customers  # unreachable
         return best_c
 
 
 @const_dataclass(init=False, slots=True)
 class GreedyDynamicPolicy:
-    """Rule-based dynamic policy: switches which per-unit rationing rule
-    applies based on how close each customer's cumulative backorder is to
-    its numeric backorder allowance (beta_c) -- CostGreedyPolicy once any
-    customer has exceeded it, SlaGapPolicy once any customer is within 80%
-    of it, otherwise FCFSPolicy since there is no SLA pressure yet. Ported
-    from policies.cpp's GreedyDynamicPolicy -- the "smart" rule-based
-    benchmark, as opposed to the single fixed rule of FCFSPolicy /
-    SlaGapPolicy / CostGreedyPolicy alone. The switching test itself is
-    unchanged from the C++ version; only what it switches BETWEEN changed
-    (a per-unit customer choice, not a whole-period rule index)."""
+    """Greedy-dynamic: switch rule by how close the customers are to their
+    allowances, measured on the cumulative backorder B_c before this period:
+        if B_c > beta_c for some customer c          -> cost-greedy
+        else if B_c > 0.8 * beta_c for some customer -> SLA-gap
+        else                                         -> FCFS
+    The 80% threshold is a design choice carried over from the earlier model."""
     mdp: MultiCustomerSlaMDP
     fcfs: FCFSPolicy
     sla_gap: SlaGapPolicy
@@ -122,10 +117,9 @@ class GreedyDynamicPolicy:
         any_exceeds_limit = False
         for c in range(self.mdp.number_of_customers):
             allowance = float(self.mdp.backorder_allowances[c])
-            exceed_amount = state.cumulative_backorder[c] - allowance
-            if exceed_amount > 0.0:
+            if float(state.cum_backorder[c]) > allowance:
                 any_exceeds_limit = True
-            elif state.cumulative_backorder[c] > 0.8 * allowance:
+            elif float(state.cum_backorder[c]) > 0.8 * allowance:
                 any_near_limit = True
 
         if any_exceeds_limit:
