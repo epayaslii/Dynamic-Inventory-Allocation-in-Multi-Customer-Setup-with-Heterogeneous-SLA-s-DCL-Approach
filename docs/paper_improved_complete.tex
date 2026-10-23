@@ -358,9 +358,6 @@ The allocation policy $\pi$ can be learned via various approaches (e.g., Deep Co
 
 \section{Numerical Results}
 \label{sec:results}
-% TODO: the table below was produced with an earlier implementation (cost-greedy projection that
-% only counted entering backorders on the other items, and a network input without the allocation-
-% progress blocks). Rerun compare_baselines.py and train_and_compare.py before submission.
 
 This section reports a first numerical study of the allocation decision (RQ2). The base-stock levels $S_i$ are held fixed and identical across items throughout, so any cost difference between policies is due to the allocation policy alone. Optimizing $\mathbf{S}$ (RQ1) is left for a later stage.
 
@@ -541,7 +538,7 @@ Because this is the last period of the horizon, the penalty follows from $B_{ct}
 
 \subsection{Experimental Setup}
 
-DCL used $n = 2000$ labeled samples per generation, $m = 100$ rollouts per candidate action, and a rollout horizon of $h = 50$ periods, for three generations. The policy network encodes each block of the state (inventory and pipeline, backorders, demand, cumulative backorder, time remaining, allowances) separately before a shared trunk of two layers of 128 units. It was trained with cross-entropy loss for up to 50 epochs with early stopping. Training took 242 seconds on a laptop CPU. The validation score of the three generations, reported by DynaPlex as $100 \exp(-\ell)$ for the validation cross-entropy loss $\ell$ and not a classification accuracy, was 81\%, 80\% and 83\%. This is a reduced budget: the default settings of the accompanying code ($n = 8000$, $m = 200$, $h = 100$) were not run to completion.
+DCL used $n = 2000$ labeled samples per generation, $m = 100$ rollouts per candidate action, and a rollout horizon of $h = 50$ periods, for three generations. The policy network encodes each block of the state (inventory and pipeline, backorders, demand, cumulative backorder, time remaining, allowances) separately before a shared trunk of two layers of 128 units. It was trained with cross-entropy loss for up to 50 epochs with early stopping. Training took 131 seconds on a laptop (Apple silicon, 8 cores). The validation score of the three generations, reported by DynaPlex as $100 \exp(-\ell)$ for the validation cross-entropy loss $\ell$ and not a classification accuracy, was 86\%, 81\% and 80\%. This is a reduced budget: the default settings of the accompanying code ($n = 8000$, $m = 200$, $h = 100$) were not run to completion.
 
 All policies were evaluated on the same 100 simulated trajectories, each of 1000 periods after a warm-up of 100 periods, using common random numbers. We report the long-run average cost per period, which is the objective of Section~\ref{sec:objective}, and the paired difference to a benchmark policy on the same demand sequences. The reported errors are standard errors of the mean over the 100 trajectories. Backorders are counted at the end of each period, after its allocation, as defined in Section~\ref{sec:horizonstats} and in Step~6.
 
@@ -555,19 +552,19 @@ All policies were evaluated on the same 100 simulated trajectories, each of 1000
         \toprule
         Policy & Cost per period & Difference to cost-greedy & Relative \\
         \midrule
-        FCFS            & 65.17 (0.58) & $+12.16$ (0.09) & $+22.9\%$ \\
-        SLA-gap         & 55.26 (0.57) & $+2.25$ (0.04)  & $+4.2\%$ \\
-        Greedy-dynamic  & 53.46 (0.54) & $+0.45$ (0.02)  & $+0.8\%$ \\
-        Cost-greedy     & 53.01 (0.54) & $0$             & $0\%$ \\
+        FCFS            & 65.17 (0.58) & $+12.35$ (0.09) & $+23.4\%$ \\
+        SLA-gap         & 55.26 (0.57) & $+2.44$ (0.04)  & $+4.6\%$ \\
+        Greedy-dynamic  & 53.46 (0.54) & $+0.63$ (0.02)  & $+1.2\%$ \\
+        Cost-greedy     & 52.82 (0.54) & $0$             & $0\%$ \\
         \midrule
-        DCL, generation 1 & 52.32 (0.53) & $-0.69$ (0.04) & $-1.3\%$ \\
-        DCL, generation 2 & 52.45 (0.52) & $-0.56$ (0.04) & $-1.0\%$ \\
-        DCL, generation 3 & 52.29 (0.53) & $-0.71$ (0.03) & $-1.3\%$ \\
+        DCL, generation 1 & 52.42 (0.52) & $-0.41$ (0.04) & $-0.8\%$ \\
+        DCL, generation 2 & 52.44 (0.52) & $-0.38$ (0.03) & $-0.7\%$ \\
+        DCL, generation 3 & 52.11 (0.53) & $-0.71$ (0.03) & $-1.3\%$ \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-The ordering of the rule-based policies is clear: FCFS, which ignores the SLAs, costs about 23\% more than cost-greedy, while the SLA-aware rules are much closer to each other. All three DCL generations have lower average cost than every rule-based policy. The improvement over cost-greedy is small in relative terms, about 1\%, but it is many standard errors large because the comparison is paired. We do not observe a clear improvement from one DCL generation to the next: generation 2 is slightly worse than generations 1 and 3, and we have not tested whether the differences between generations are significant.
+The ordering of the rule-based policies is clear: FCFS, which ignores the SLAs, costs about 23\% more than cost-greedy, while the SLA-aware rules are much closer to each other. All three DCL generations have lower average cost than every rule-based policy. The improvement over cost-greedy is small in relative terms, between 0.7\% and 1.3\%, but it is many standard errors large because the comparison is paired. Generation 3 is the best (a 1.3\% gain), while generations 1 and 2 are similar at about 0.7--0.8\%; we have not tested whether the differences between generations are significant.
 
 \paragraph{Limitations.} These results are for a single instance, a single base-stock level, one evaluation seed and a reduced training budget, and no repeated training runs were carried out. They show that a learned allocation can beat the best rule-based policy here, but they do not yet show how large the gain is in general, and the gain may depend on the base-stock level.
 

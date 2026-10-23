@@ -49,4 +49,4 @@ The sizes `|C|`, `|I|`, `tau` and `T` are constructor arguments; `validate.py` r
 
 - `tau = 0` (same-period replenishment) is not allowed; the paper also requires `tau >= 1`.
 - Per-customer review horizons were removed; the paper has one `T` shared by all customers.
-- DCL training with the current featurizer has not been re-run (see the README).
+- DCL training was re-run with the current featurizer (see the README).

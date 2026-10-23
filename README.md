@@ -108,7 +108,7 @@ On Intel Macs the last available torch is 2.2.2, which needs `numpy<2` (`.venv/b
 
 Checked on the current code: `validate.py` passes (it recomputes the order, the inventory position, the horizon statistics and the period cost from the paper's formulas, and fails when the MDP is deliberately broken), pyright accepts the `assert_mdp` / `assert_policy_for_mdp` / `assert_featurizer_for_mdp` calls, `compare_baselines.py` compiles and runs the MDP and all four policies under the DynaML engine, and the featurizer's output length matches its declared size and the network's block sizes for several instance sizes.
 
-**Not yet re-run on the current code:** DCL training. The featurizer now includes the allocation-in-progress blocks (see `mdp.py`), so the training results reported in the paper's results section come from the earlier version and must be regenerated.
+DCL training has been re-run on the current code (`n=2000, m=100, h=50`, 3 generations, about 131 s): all three generations beat the best rule (cost-greedy, 52.82 per period) by 0.7%-1.3%, generation 3 being best (52.11). The paper's results table is updated accordingly. The results are for one instance, one base stock and one training run.
 
 ## Related Work
 

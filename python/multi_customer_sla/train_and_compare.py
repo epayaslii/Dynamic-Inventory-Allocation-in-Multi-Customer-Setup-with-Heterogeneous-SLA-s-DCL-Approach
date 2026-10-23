@@ -107,7 +107,7 @@ def main() -> None:
     }
     for agent in agents:
         to_compare[f"DCL_gen{agent.info['generation']}"] = agent
-    print(comparer.compare(to_compare))
+    print(comparer.compare(to_compare, benchmark="CostGreedy"))
 
 
 if __name__ == "__main__":
