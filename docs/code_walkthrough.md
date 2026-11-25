@@ -87,10 +87,11 @@ the paper; without them consecutive unit decisions would look identical to the p
 ## 2. `policies.py`
 The paper prescribes no allocation policy; these are benchmarks and the generation-0 rollout policy. Each answers
 "who gets the next unit?" and never holds. Pseudocode and a worked example are in the paper.
-- **FCFS:** the lowest-indexed customer still owed a unit.
+- **FCFS:** customers with unserved backlog of the item first, longest-backlogged (`backorder_age`) first, one unit at a time until the backlog is covered; then new demand, one unit each in rotation.
+- **Tie-break (all rules):** the first tied customer after `state.last_served` in cyclic order, so ties alternate instead of favouring index 0.
 - **SLA-gap:** the customer with the largest `B_{c,t-1} - beta_c`.
 - **Cost-greedy:** among customers with `B_{c,t-1} + o_c + w_c > beta_c`, the one with the highest `p_c`; else the
-  lowest index. (`o_c`: units still owed of the current item; `w_c`: units still owed on the other items.)
+  tie-break rotation. (`o_c`: units still owed of the current item; `w_c`: units still owed on the other items.)
 - **Greedy-dynamic:** cost-greedy if some `B_{c,t-1} > beta_c`, SLA-gap if some `B_{c,t-1} > 0.8 beta_c`, else FCFS.
 
 ## 3. `network.py`

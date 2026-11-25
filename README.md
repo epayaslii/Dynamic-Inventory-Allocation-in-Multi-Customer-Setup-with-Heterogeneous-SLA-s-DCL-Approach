@@ -53,9 +53,10 @@ and in the horizon's last period (`R_t(T) = 0`) the penalty is `Σ_c p_c · (B_c
 
 ### Rule-based allocation policies
 `policies.py` has four rules. Each answers "who gets the next unit of the scarce item?" and never holds a unit back (see the module docstring of `mdp.py` for why the action is unit-by-unit). Pseudocode and a worked example are in the paper (Section "Pseudocode of the Benchmark Policies").
-1. **FCFSPolicy:** the lowest-indexed customer still owed a unit.
+1. **FCFSPolicy:** backlog first, oldest backlog first (`backorder_age` = consecutive periods a customer has been backlogged on the item); each backlogged customer gets one unit at a time until its backlog is covered, then the next-oldest. Once no backlog is left, units go one by one to the customers owed new demand.
 2. **SlaGapPolicy:** the customer with the largest `B_{c,t-1}(T) − β_c`.
-3. **CostGreedyPolicy:** among customers projected to exceed their allowance (`B_{c,t-1}(T) + o_c + w_c > β_c`), the one with the highest `p_c`; otherwise the lowest index.
+3. **CostGreedyPolicy:** among customers projected to exceed their allowance (`B_{c,t-1}(T) + o_c + w_c > β_c`), the one with the highest `p_c`; otherwise rotate.
+**Tie-break (all policies):** no lowest-index default. Among tied customers the unit goes to the first one after the customer that received the previous unit (`state.last_served`, cyclic), so ties alternate between customers across items and periods.
 4. **GreedyDynamicPolicy:** cost-greedy if some `B_{c,t-1}(T) > β_c`, SLA-gap if some `B_{c,t-1}(T) > 0.8 β_c`, otherwise FCFS.
 
 The paper prescribes no allocation policy; these are benchmarks and the rollout policy of generation 0 of DCL.

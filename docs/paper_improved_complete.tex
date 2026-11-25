@@ -398,7 +398,7 @@ We use $|\mathcal{C}| = 2$ customers and $|I| = 3$ items, with lead time $\tau =
 The allocation $\mathbf{a}_t$ is built one unit at a time: whenever stock of item $i$ is scarce, i.e., $\sum_{c} (b_{cit} + d_{cit}) > \OH'_{it}$, the policy is asked, once per available unit, to which customer that unit goes, or whether to hold it. In such periods the resulting allocation is the tally of these choices, and every feasible allocation in $\mathcal{A}(\mathbf{s}_t)$ can be built this way. When available supply covers everything owed for an item, it is allocated in full without consulting the policy. This restricts the experiments to policies that allocate in full whenever supply covers everything owed. The restriction is not without loss of optimality in general: holding a unit that could serve one customer now can pay off when it is reserved for a customer that is close to its allowance. The paper prescribes no particular allocation policy, so we compare four rule-based benchmarks with a policy learned by Deep Controlled Learning (DCL) \citep{temizoz2025dcl}.
 
 \begin{itemize}
-    \item \textbf{FCFS:} serves the lowest-indexed customer that is still owed a unit.
+    \item \textbf{FCFS:} serves customers with an unserved backlog of the item first, the longest-backlogged customer first and one unit at a time until its backlog is covered; when no backlog is left, units go one by one to the customers owed new demand, in rotation.
     \item \textbf{SLA-gap:} serves the customer whose cumulative backorder $B_{c,t-1}(T)$ exceeds its allowance $\beta_c$ by the most (or falls short of it by the least).
     \item \textbf{Cost-greedy:} serves the customer that would, if the unit were withheld, be projected to exceed $\beta_c$ with the highest penalty $p_c$ (projection $\widehat{B}_c = B_{c,t-1}(T) + o_c + w_c$, Algorithm~\ref{alg:cost}).
     \item \textbf{Greedy-dynamic:} uses cost-greedy once $B_{c,t-1}(T) > \beta_c$ for some customer, SLA-gap once $B_{c,t-1}(T) > 0.8\,\beta_c$ for some customer, and FCFS otherwise.
@@ -412,7 +412,7 @@ The four rule-based policies are rules for the unit decision described above. Fi
 \begin{equation}
     w_c = \sum_{j \in I \setminus \{i\}} \big(b_{cjt} + d_{cjt} - a_{cjt}\big),
 \end{equation}
-where $a_{cjt}$ is zero for an item $j$ that has not been allocated yet. Every rule returns one customer of $E$, breaks ties in favor of the lowest customer index, and never holds a unit back. All rules use the cumulative backorder $B_{c,t-1}(T)$ of the state, and none of them looks ahead beyond the current period. Algorithm~\ref{alg:period} shows how a rule $\rho$ is used in Step~4 of every period, and Algorithms~\ref{alg:fcfs} to~\ref{alg:dynamic} define the four rules.
+where $a_{cjt}$ is zero for an item $j$ that has not been allocated yet. Every rule returns one customer of $E$, breaks ties by rotation (the unit goes to the first tied customer after the one that received the previous unit), and never holds a unit back. All rules use the cumulative backorder $B_{c,t-1}(T)$ of the state, and none of them looks ahead beyond the current period. Algorithm~\ref{alg:period} shows how a rule $\rho$ is used in Step~4 of every period, and Algorithms~\ref{alg:fcfs} to~\ref{alg:dynamic} define the four rules.
 
 \begin{algorithm}[H]
 \caption{Allocation in period $t$ with a unit rule $\rho$ (Step 4)}
@@ -445,7 +445,8 @@ where $a_{cjt}$ is zero for an item $j$ that has not been allocated yet. Every r
 \begin{algorithmic}[1]
 \Require remaining owed units $o_c$ for all $c \in \mathcal{C}$
 \State $E \gets \{c \in \mathcal{C} : o_c > 0\}$
-\State \Return $\min E$ \Comment{lowest customer index}
+\State $\kappa_c \gets$ age of the backlog of $c$ on item $i$ if $c$ still has unserved backlog of $i$, else $0$, for $c \in E$
+\State \Return the first customer after the last served one (cyclically) in $\arg\max_{c \in E} \kappa_c$
 \end{algorithmic}
 \end{algorithm}
 
@@ -458,7 +459,7 @@ where $a_{cjt}$ is zero for an item $j$ that has not been allocated yet. Every r
 \For{each $c \in E$}
     \State $g_c \gets B_{c,t-1}(T) - \beta_c$ \Comment{gap to the allowance; positive means already above it}
 \EndFor
-\State \Return $\arg\max_{c \in E} g_c$ \Comment{ties: lowest index}
+\State \Return $\arg\max_{c \in E} g_c$ \Comment{ties: rotation}
 \end{algorithmic}
 \end{algorithm}
 
@@ -476,7 +477,7 @@ where $a_{cjt}$ is zero for an item $j$ that has not been allocated yet. Every r
         \State $\pi_c \gets 0$
     \EndIf
 \EndFor
-\State \Return $\arg\max_{c \in E} \pi_c$ \Comment{ties: lowest index; if all $\pi_c = 0$ this is FCFS}
+\State \Return $\arg\max_{c \in E} \pi_c$ \Comment{ties: rotation; if all $\pi_c = 0$ this is FCFS}
 \end{algorithmic}
 \end{algorithm}
 
@@ -497,7 +498,7 @@ where $a_{cjt}$ is zero for an item $j$ that has not been allocated yet. Every r
 
 \paragraph{Example.} Consider one item and three customers in the last period of a review horizon ($R_{t-1}(T) = 1$), with $\OH'_{it} = 2$ units of stock and the data of Table~\ref{tab:decision-example}. The customers are owed $o = (2, 3, 2)$ units in total, so the stock is scarce and two unit decisions are made. There are no other items, so $w_c = 0$. The rules choose as follows.
 \begin{itemize}
-    \item \textbf{FCFS} gives both units to customer A, the lowest index, although A is far from its allowance ($B_{A,t-1} = 2$ against $\beta_A = 6$).
+    \item \textbf{FCFS} serves B's one backlogged unit first (B is the only customer with backlog), then rotates to the next customer, C, for the second unit; A, the customer furthest from its allowance, gets nothing.
     \item \textbf{SLA-gap} has the gaps $g = (-4, -1, +1)$ and gives both units to customer C, whose cumulative backorder is already above its allowance.
     \item \textbf{Cost-greedy} computes $\widehat{B} = (4, 8, 10)$ and compares them with $\beta = (6, 6, 7)$: customers B and C are projected to pay a penalty, A is not. It picks B, the one with the higher penalty cost ($p_B = 40 > p_C = 15$), for both units; after the first unit B is still projected above its allowance ($5 + 2 = 7 > 6$), so B also gets the second.
     \item \textbf{Greedy-dynamic} finds $B_{C,t-1} = 8 > \beta_C = 7$, so it applies the cost-greedy rule and gives the same allocation.

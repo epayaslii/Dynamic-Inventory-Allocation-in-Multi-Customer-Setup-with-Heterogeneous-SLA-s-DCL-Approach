@@ -108,6 +108,9 @@ class State:
     demand: list[int]
     cum_backorder: list[int]
     time_remaining: int
+    # tracking used by the rule-based policies (not in the paper; not featurized)
+    backorder_age: list[int]   # periods customer c has been continuously backlogged on item i (0 = none)
+    last_served: int           # customer that received the most recent unit (-1 = none yet); drives the tie-break
     # scratch
     order: list[int]
     allocation: list[int]
@@ -225,6 +228,8 @@ class MultiCustomerSlaMDP:
             demand=[0] * n_pairs,
             cum_backorder=[0] * self.number_of_customers,
             time_remaining=self.review_horizon,
+            backorder_age=[0] * n_pairs,
+            last_served=-1,
             order=[0] * self.number_of_items,
             allocation=[0] * n_pairs,
             alloc_item=0,
@@ -268,6 +273,7 @@ class MultiCustomerSlaMDP:
         if action < self.number_of_customers:
             state.allocation[action * self.number_of_items + i] += 1
             state.alloc_owed[action] -= 1
+            state.last_served = action
         # action == number_of_customers: HOLD, nothing is assigned.
         state.alloc_units -= 1
 
@@ -338,6 +344,10 @@ class MultiCustomerSlaMDP:
         # Step 5, backorders: b_{ci,t+1} = b_cit + d_cit - a_cit.
         for idx in range(self.number_of_customers * self.number_of_items):
             state.backorder[idx] = state.backorder[idx] + state.demand[idx] - state.allocation[idx]
+            if state.backorder[idx] > 0:
+                state.backorder_age[idx] += 1
+            else:
+                state.backorder_age[idx] = 0
 
         # Step 5, review horizon statistics: B_ct = B_{c,t-1} + e_ct, where e_ct is
         # customer c's backorder at the END of this period (after its allocation).

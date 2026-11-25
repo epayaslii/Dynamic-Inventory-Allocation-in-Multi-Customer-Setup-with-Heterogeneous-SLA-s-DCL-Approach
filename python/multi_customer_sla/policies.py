@@ -18,7 +18,11 @@ Notation used below (see mdp.py for the full mapping):
                                          what customer c is still owed on the
                                          other items, given the allocation so far
 
-Every policy returns a customer index (never HOLD); ties go to the lowest index.
+Every policy returns a customer index (never HOLD). Tie-break rule shared by all
+of them (replaces "lowest index"): among the customers tied for the best score,
+serve the first one after state.last_served in cyclic order, i.e. units are handed
+out one by one, rotating between the tied customers (and the rotation carries over
+from one tie to the next, across items and periods).
 The pseudocode of the four policies, with worked examples, is in the paper.
 """
 from dynaplex.modelling import const_dataclass
@@ -28,34 +32,59 @@ from mdp import MultiCustomerSlaMDP, State
 
 @const_dataclass(slots=True)
 class FCFSPolicy:
-    """FCFS: serve the lowest-indexed eligible customer."""
+    """FCFS: customers with an outstanding backlog of this item come first, the one
+    backlogged for the most consecutive periods (state.backorder_age) first, and
+    each gets one unit at a time until its backlog b_ci is covered; then the older
+    backlog of the next customer, and so on. A customer's backlog is served before
+    its new demand d_ci. When nobody has backlog left, the remaining units go to
+    the customers owed new demand, one by one in rotation (tie-break rule)."""
     mdp: MultiCustomerSlaMDP
 
     def get_action(self, state: State) -> int:
-        for c in range(self.mdp.number_of_customers):
+        n_c = self.mdp.number_of_customers
+        n_i = self.mdp.number_of_items
+        i = state.alloc_item
+        best_score = -1
+        for c in range(n_c):
             if state.alloc_owed[c] > 0:
-                return c
-        return self.mdp.number_of_customers  # unreachable: AWAIT_ACTION implies E is not empty
+                score = 0
+                if state.alloc_owed[c] - state.demand[c * n_i + i] > 0:  # backlog of item i still unserved
+                    score = state.backorder_age[c * n_i + i]
+                if score > best_score:
+                    best_score = score
+        for k in range(1, n_c + 1):
+            c = (state.last_served + k + n_c) % n_c
+            if state.alloc_owed[c] > 0:
+                score = 0
+                if state.alloc_owed[c] - state.demand[c * n_i + i] > 0:
+                    score = state.backorder_age[c * n_i + i]
+                if score == best_score:
+                    return c
+        return n_c  # unreachable: AWAIT_ACTION implies E is not empty
 
 
 @const_dataclass(slots=True)
 class SlaGapPolicy:
     """SLA-gap: serve the eligible customer with the largest gap B_c - beta_c, i.e.
-    the one furthest above (or least far below) its allowance."""
+    the one furthest above (or least far below) its allowance. Ties: rotation."""
     mdp: MultiCustomerSlaMDP
 
     def get_action(self, state: State) -> int:
-        best_c = -1
+        n_c = self.mdp.number_of_customers
+        found = False
         best_gap = 0
-        for c in range(self.mdp.number_of_customers):
+        for c in range(n_c):
             if state.alloc_owed[c] > 0:
                 gap = state.cum_backorder[c] - self.mdp.backorder_allowances[c]
-                if best_c == -1 or gap > best_gap:
-                    best_c = c
+                if (not found) or gap > best_gap:
+                    found = True
                     best_gap = gap
-        if best_c == -1:
-            return self.mdp.number_of_customers  # unreachable
-        return best_c
+        for k in range(1, n_c + 1):
+            c = (state.last_served + k + n_c) % n_c
+            if state.alloc_owed[c] > 0:
+                if state.cum_backorder[c] - self.mdp.backorder_allowances[c] == best_gap:
+                    return c
+        return n_c  # unreachable
 
 
 @const_dataclass(slots=True)
@@ -64,8 +93,8 @@ class CostGreedyPolicy:
     at the end of the period if no further unit were given to it,
         Bhat_c = B_c + o_c + other_c,
     and call it at risk if Bhat_c > beta_c. Serve the at-risk customer with the
-    highest penalty p_c; if no eligible customer is at risk, serve the
-    lowest-indexed one.
+    highest penalty p_c; ties, and the case where no eligible customer is at risk,
+    are broken by the rotation rule.
 
     Bhat_c is a projection: it treats the customer's remaining owed units on every
     item as backorder at the end of the period, and ignores that the other items
@@ -74,22 +103,25 @@ class CostGreedyPolicy:
     mdp: MultiCustomerSlaMDP
 
     def get_action(self, state: State) -> int:
-        best_c = -1
+        n_c = self.mdp.number_of_customers
+        pen: list[float] = [-1.0] * n_c
         best_penalty = -1.0
-        for c in range(self.mdp.number_of_customers):
+        for c in range(n_c):
             if state.alloc_owed[c] > 0:
                 projected = state.cum_backorder[c] + state.alloc_owed[c]
                 for j in range(self.mdp.number_of_items):
                     if j != state.alloc_item:
                         idx = c * self.mdp.number_of_items + j
                         projected += state.backorder[idx] + state.demand[idx] - state.allocation[idx]
-                penalty = self.mdp.penalty_costs[c] if projected > self.mdp.backorder_allowances[c] else 0.0
-                if penalty > best_penalty:
-                    best_penalty = penalty
-                    best_c = c
-        if best_c == -1:
-            return self.mdp.number_of_customers  # unreachable
-        return best_c
+                pen[c] = self.mdp.penalty_costs[c] if projected > self.mdp.backorder_allowances[c] else 0.0
+                if pen[c] > best_penalty:
+                    best_penalty = pen[c]
+        for k in range(1, n_c + 1):
+            c = (state.last_served + k + n_c) % n_c
+            if state.alloc_owed[c] > 0:
+                if pen[c] == best_penalty:
+                    return c
+        return n_c  # unreachable
 
 
 @const_dataclass(init=False, slots=True)

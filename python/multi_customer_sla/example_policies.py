@@ -217,6 +217,7 @@ def decision_example():
         state = mdp.get_initial_state(context)
         state.on_hand = [2]
         state.backorder = [0, 1, 0]
+        state.backorder_age = [0, 1, 0]  # B's one backlogged unit is one period old
         state.demand = [2, 2, 2]
         state.cum_backorder = list(cum_before)
         state.time_remaining = 1
